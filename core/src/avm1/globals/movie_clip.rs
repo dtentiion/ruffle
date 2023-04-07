@@ -223,6 +223,37 @@ fn set_scale_9_grid<'gc>(
     Ok(())
 }
 
+<<<<<<< HEAD
+=======
+fn scale_9_grid<'gc>(
+    this: MovieClip<'gc>,
+    activation: &mut Activation<'_, 'gc>,
+) -> Result<Value<'gc>, Error<'gc>> {
+    let rect = this.scaling_grid();
+    if rect.is_valid() {
+        new_rectangle(activation, rect)
+    } else {
+        Ok(Value::Undefined)
+    }
+}
+
+fn set_scale_9_grid<'gc>(
+    this: MovieClip<'gc>,
+    activation: &mut Activation<'_, 'gc>,
+    value: Value<'gc>,
+) -> Result<(), Error<'gc>> {
+    if let Value::Object(object) = value {
+        if let Some(rectangle) = object_to_rectangle(activation, object)? {
+            this.set_scaling_grid(activation.context.gc_context, rectangle);
+        }
+    } else {
+        this.set_scaling_grid(activation.context.gc_context, Rectangle::default());
+    };
+    Ok(())
+}
+
+#[allow(clippy::comparison_chain)]
+>>>>>>> c18cf3954 (avm1: Implement `MovieClip.scale9Grid`)
 pub fn hit_test<'gc>(
     movie_clip: MovieClip<'gc>,
     activation: &mut Activation<'_, 'gc>,

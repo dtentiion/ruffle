@@ -133,11 +133,6 @@ fn set_cache_as_bitmap<'gc>(
     Ok(())
 }
 
-fn scale_9_grid<'gc>(
-    this: Avm1Button<'gc>,
-    activation: &mut Activation<'_, 'gc>,
-) -> Result<Value<'gc>, Error<'gc>> {
-    avm1_stub!(activation, "Button", "scale9Grid");
     let rect = this.scaling_grid();
     if rect.is_valid() {
         new_rectangle(activation, rect)
