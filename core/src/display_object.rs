@@ -1116,7 +1116,22 @@ pub fn render_base<'gc>(
         apply_standard_mask_and_scroll(
             this,
             context,
-            |context| this.render_self(context),
+            |context| {
+                // Route through 9-slice scaling when the SWF
+                // authored a `scale9Grid` rect on this object AND
+                // the applied transform is non-rotated. LCE's menu
+                // panels (FJ_panel9Grid_16, FJ_PanelRecessFade)
+                // need this path so their borders don't stretch
+                // when the scene resizes the panel frame.
+                if this.scaling_grid().is_valid()
+                    && context.transform_stack.transform().matrix.b == 0.0
+                    && context.transform_stack.transform().matrix.c == 0.0
+                {
+                    render_with_scaling_grid(this, context);
+                } else {
+                    this.render_self(context);
+                }
+            },
             &options,
         );
     }
@@ -1261,6 +1276,195 @@ pub fn apply_standard_mask_and_scroll<'gc, F>(
         // Remove the translation that we pushed
         context.transform_stack.pop();
     }
+}
+
+pub fn render_with_scaling_grid<'gc>(
+    this: DisplayObject<'gc>,
+    context: &mut RenderContext<'_, 'gc>,
+) {
+    let scaling_rect = this.scaling_grid();
+    debug_assert!(scaling_rect.is_valid());
+
+    let bounds = this.bounds_with_transform(&Default::default(), BoundsMode::Engine);
+
+    let local_matrix = this.base().transform(true).matrix;
+    let scale_x = f32::sqrt(local_matrix.a * local_matrix.a + local_matrix.b * local_matrix.b);
+    let scale_y = f32::sqrt(local_matrix.c * local_matrix.c + local_matrix.d * local_matrix.d);
+
+    let scaled_rect = Rectangle {
+        x_min: Twips::new((bounds.x_min.get() as f32 * scale_x) as i32),
+        y_min: Twips::new((bounds.y_min.get() as f32 * scale_y) as i32),
+        x_max: Twips::new((bounds.x_max.get() as f32 * scale_x) as i32),
+        y_max: Twips::new((bounds.y_max.get() as f32 * scale_y) as i32),
+    };
+    let scaled_width = scaled_rect.width();
+    let scaled_height = scaled_rect.height();
+
+    let left_width = scaling_rect.x_min - bounds.x_min;
+    let right_width = bounds.x_max - scaling_rect.x_max;
+    let top_height = scaling_rect.y_min - bounds.y_min;
+    let bottom_height = bounds.y_max - scaling_rect.y_max;
+
+    let inner_width = scaled_width - left_width - right_width;
+    let inner_height = scaled_height - top_height - bottom_height;
+    let inner_scale_x = inner_width.get() as f32 / scaling_rect.width().get() as f32;
+    let inner_scale_y = inner_height.get() as f32 / scaling_rect.height().get() as f32;
+
+    let inv_scale = Matrix::scale(1.0 / scale_x, 1.0 / scale_y);
+    let world_matrix = context.transform_stack.transform().matrix;
+
+    let mut draw_region =
+        |region: Rectangle<Twips>, x_min: Twips, y_min: Twips, scale_x: f32, scale_y: f32| {
+            if region.x_max <= region.x_min || region.y_max <= region.y_min {
+                return;
+            }
+
+            let mask_rect = world_matrix
+                * inv_scale
+                * Matrix::translate(x_min, y_min)
+                * Matrix::scale(
+                    region.width().to_pixels() as f32 * scale_x,
+                    region.height().to_pixels() as f32 * scale_y,
+                );
+
+            let matrix = Matrix::scale(scale_x, scale_y)
+                * inv_scale
+                * Matrix::translate(
+                    Twips::new((x_min.get() as f32 / scale_x) as i32),
+                    Twips::new((y_min.get() as f32 / scale_y) as i32),
+                )
+                * Matrix::translate(-region.x_min, -region.y_min);
+
+            context.commands.push_mask();
+            context.commands.draw_rect(Color::WHITE, mask_rect);
+            context.commands.activate_mask();
+
+            context.transform_stack.push(&Transform {
+                matrix,
+                ..Default::default()
+            });
+
+            this.render_self(context);
+
+            context.transform_stack.pop();
+
+            context.commands.deactivate_mask();
+            context.commands.draw_rect(Color::WHITE, mask_rect);
+            context.commands.pop_mask();
+        };
+
+    let tl = Rectangle {
+        x_min: bounds.x_min,
+        y_min: bounds.y_min,
+        x_max: scaling_rect.x_min,
+        y_max: scaling_rect.y_min,
+    };
+    let t = Rectangle {
+        x_min: scaling_rect.x_min,
+        y_min: bounds.y_min,
+        x_max: scaling_rect.x_max,
+        y_max: scaling_rect.y_min,
+    };
+    let tr = Rectangle {
+        x_min: scaling_rect.x_max,
+        y_min: bounds.y_min,
+        x_max: bounds.x_max,
+        y_max: scaling_rect.y_min,
+    };
+    let l = Rectangle {
+        x_min: bounds.x_min,
+        y_min: scaling_rect.y_min,
+        x_max: scaling_rect.x_min,
+        y_max: scaling_rect.y_max,
+    };
+    let mid = Rectangle {
+        x_min: scaling_rect.x_min,
+        y_min: scaling_rect.y_min,
+        x_max: scaling_rect.x_max,
+        y_max: scaling_rect.y_max,
+    };
+    let r = Rectangle {
+        x_min: scaling_rect.x_max,
+        y_min: scaling_rect.y_min,
+        x_max: bounds.x_max,
+        y_max: scaling_rect.y_max,
+    };
+    let bl = Rectangle {
+        x_min: bounds.x_min,
+        y_min: scaling_rect.y_max,
+        x_max: scaling_rect.x_min,
+        y_max: bounds.y_max,
+    };
+    let b = Rectangle {
+        x_min: scaling_rect.x_min,
+        y_min: scaling_rect.y_max,
+        x_max: scaling_rect.x_max,
+        y_max: bounds.y_max,
+    };
+    let br = Rectangle {
+        x_min: scaling_rect.x_max,
+        y_min: scaling_rect.y_max,
+        x_max: bounds.x_max,
+        y_max: bounds.y_max,
+    };
+
+    draw_region(tl, scaled_rect.x_min, scaled_rect.y_min, 1.0, 1.0);
+    draw_region(
+        t,
+        scaled_rect.x_min + left_width,
+        scaled_rect.y_min,
+        inner_scale_x,
+        1.0,
+    );
+    draw_region(
+        tr,
+        scaled_rect.x_max - right_width,
+        scaled_rect.y_min,
+        1.0,
+        1.0,
+    );
+    draw_region(
+        l,
+        scaled_rect.x_min,
+        scaled_rect.y_min + top_height,
+        1.0,
+        inner_scale_y,
+    );
+    draw_region(
+        mid,
+        scaled_rect.x_min + left_width,
+        scaled_rect.y_min + top_height,
+        inner_scale_x,
+        inner_scale_y,
+    );
+    draw_region(
+        r,
+        scaled_rect.x_min + left_width + inner_width,
+        scaled_rect.y_min + top_height,
+        1.0,
+        inner_scale_y,
+    );
+    draw_region(
+        bl,
+        scaled_rect.x_min,
+        scaled_rect.y_min + top_height + inner_height,
+        1.0,
+        1.0,
+    );
+    draw_region(
+        b,
+        scaled_rect.x_min + left_width,
+        scaled_rect.y_min + top_height + inner_height,
+        inner_scale_x,
+        1.0,
+    );
+    draw_region(
+        br,
+        scaled_rect.x_min + left_width + inner_width,
+        scaled_rect.y_min + top_height + inner_height,
+        1.0,
+        1.0,
+    );
 }
 
 #[enum_trait_object(
