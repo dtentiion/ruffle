@@ -19,7 +19,8 @@ package flash.display {
         public function get accessibilityProperties():AccessibilityProperties {
             return this._accessibilityProperties;
         }
-        public function set accessibilityProperties(value:AccessibilityProperties):void {
+        public function set accessibilityProperties(value:AccessibilityProperties):void
+        {
             this._accessibilityProperties = value;
         }
 
