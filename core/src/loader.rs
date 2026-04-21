@@ -356,6 +356,11 @@ impl<'gc> LoadManager<'gc> {
                     Ok(())
                 }
                 Err(e) => {
+                    tracing::info!(
+                        "load_asset_movie Err branch for {:?}: {:?}",
+                        e.url,
+                        e.error
+                    );
                     tracing::warn!(
                         "Failed to fetch imported SWF {:?}: {:?}",
                         e.url,
@@ -492,15 +497,29 @@ impl Default for LoadManager<'_> {
 fn try_settle_imports<'gc>(uc: &mut UpdateContext<'gc>, mut clip: MovieClip<'gc>) {
     loop {
         let mut limit = ExecutionLimit::none();
+        let url = clip.movie().url().to_string();
         let done = clip.preload(uc, &mut limit);
+        tracing::info!(
+            "try_settle_imports: {:?} preload returned done={}",
+            url,
+            done
+        );
         if !done {
             return;
         }
         clip.drain_symbol_class_for_import(uc);
         let Some(parent) = clip.importer_movie() else {
+            tracing::info!(
+                "try_settle_imports: {:?} has no importer, cascade done",
+                url
+            );
             return;
         };
         parent.finish_importing();
+        tracing::info!(
+            "try_settle_imports: cleared awaiting_import on parent {:?}, cascading",
+            parent.movie().url()
+        );
         clip = parent;
     }
 }

@@ -341,27 +341,32 @@ impl<'gc> MovieClip<'gc> {
     /// binding during frame 1.
     pub fn drain_symbol_class_for_import(self, context: &mut UpdateContext<'gc>) {
         if self.importer_movie().is_none() {
+            tracing::info!(
+                "drain_symbol_class_for_import: {:?} has no importer, skipping",
+                self.movie().url()
+            );
             return;
         }
         let movie = self.movie();
         let num_frames = self.header_frames();
+        let mut registered = 0usize;
         for frame in 0..num_frames {
             let Some(eager_tags) = self.0.shared.get().take_eager_tags(frame) else {
                 continue;
             };
             for (class_name, id) in eager_tags.symbolclass_names {
-                tracing::debug!(
-                    "Queueing imported SymbolClass: {:?} -> ({:?}, {})",
-                    class_name,
-                    movie.url(),
-                    id
-                );
                 context
                     .library
                     .avm2_class_registry_mut()
                     .register_pending_imported_symbol(class_name, movie.clone(), id);
+                registered += 1;
             }
         }
+        tracing::info!(
+            "drain_symbol_class_for_import: {:?} registered {} pending SymbolClass entries",
+            movie.url(),
+            registered
+        );
     }
 
     /// Construct a movie clip that represents the root movie
