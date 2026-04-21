@@ -1511,9 +1511,11 @@ impl<'gc> MovieClip<'gc> {
 
     /// Variant of `instantiate_child` that draws the character out of a
     /// foreign movie's library (e.g. an ImportAssets2 sibling SWF).
-    /// First cut: log only, return None. We want to confirm on device
-    /// that the resolver / drain chain is working without the
-    /// downstream AS3 constructor paths crashing.
+    /// Narrow placement path to isolate crashes: walk one step at a
+    /// time. Right now: instantiate, replace_at_depth, set_parent,
+    /// set_depth. No apply_place_object (no matrix yet), no name
+    /// setting, no AS3 event dispatch. If this step is stable we add
+    /// the next.
     fn instantiate_child_from_movie(
         self,
         context: &mut UpdateContext<'gc>,
@@ -1525,20 +1527,25 @@ impl<'gc> MovieClip<'gc> {
         if Arc::ptr_eq(&src_movie, &self.movie()) {
             return self.instantiate_child(context, id, depth, _place_object);
         }
-        let have_char = context
+        if self.has_child_at_depth(depth) {
+            return None;
+        }
+        let child = context
             .library
-            .library_for_movie(src_movie.clone())
-            .and_then(|l| l.character_by_id(id))
-            .is_some();
+            .library_for_movie_mut(src_movie.clone())
+            .instantiate_by_id(id, context.gc_context)?;
         tracing::info!(
-            "instantiate_child_from_movie: would place {:?}#{} at depth {} (src={:?}), char_present={}",
+            "instantiate_child_from_movie: instantiated {:?}#{} at depth {}",
             src_movie.url(),
             id,
-            depth,
-            self.movie().url(),
-            have_char
+            depth
         );
-        None
+        let _prev = self.replace_at_depth(context, child, depth);
+        tracing::info!("instantiate_child_from_movie: replace_at_depth OK");
+        child.set_depth(depth);
+        child.set_parent(context, Some(self.into()));
+        tracing::info!("instantiate_child_from_movie: set_parent OK");
+        Some(child)
     }
 
     /// Instantiate a given child object on the timeline at a given depth.
