@@ -2170,18 +2170,30 @@ impl<'gc> MovieClip<'gc> {
         let class_object = self.0.shared.get().avm2_class.get();
         let class_object = class_object.unwrap_or_else(|| context.avm2.classes().movieclip);
 
+        let class_name = class_object.inner_class_definition().name();
+        let has_object = self.0.object2.get().is_some();
+        tracing::info!(
+            "construct_as_avm2_object: class={} has_object={}",
+            class_name,
+            has_object
+        );
+
         if let Some(object) = self.0.object2.get() {
             let mut activation = Avm2Activation::from_nothing(context);
             let result =
                 class_object.call_init(object.into(), Avm2FunctionArgs::empty(), &mut activation);
 
-            if let Err(e) = result {
-                Avm2::uncaught_error(
-                    &mut activation,
-                    Some(self.into()),
-                    e,
-                    "Error running AVM2 construction for movie clip",
-                );
+            match result {
+                Ok(_) => tracing::info!("ctor_ok: {}", class_name),
+                Err(e) => {
+                    tracing::warn!("ctor_err: {} => {:?}", class_name, e);
+                    Avm2::uncaught_error(
+                        &mut activation,
+                        Some(self.into()),
+                        e,
+                        "Error running AVM2 construction for movie clip",
+                    );
+                }
             }
         }
     }
