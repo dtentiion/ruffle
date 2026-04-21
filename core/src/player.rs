@@ -2589,6 +2589,58 @@ impl Player {
         })
     }
 
+    /// Enumerate a named root child's subtree up to `max_depth` levels deep.
+    /// Returns `(depth, name, class_name)` for each descendant in render-list
+    /// order, flattened. depth=1 means direct children of the named root
+    /// child; depth=2 means grandchildren; etc. Caller can print indented by
+    /// depth for a human-readable tree dump. Needed because
+    /// `FJ_Base.GetTextField` looks three levels deep from the button, and
+    /// one level at a time made for noisy round-trips through FFI+GHA builds.
+    pub fn enumerate_subtree_of(
+        &mut self,
+        child_name: &str,
+        max_depth: usize,
+    ) -> Vec<(usize, String, String)> {
+        use crate::avm2::Activation as Avm2Activation;
+        use crate::display_object::{DisplayObject, TDisplayObject, TDisplayObjectContainer};
+        use crate::string::WString;
+        self.mutate_with_update_context(|context| {
+            let Some(root) = context.stage.root_clip() else { return vec![]; };
+            let Some(root_container) = root.as_container() else { return vec![]; };
+            let name_ws = WString::from_utf8(child_name);
+            let Some(start) = root_container.child_by_name(&name_ws, false) else {
+                return vec![];
+            };
+            let mut out: Vec<(usize, String, String)> = Vec::new();
+            let mut activation = Avm2Activation::from_nothing(context);
+            fn walk<'gc>(
+                node: DisplayObject<'gc>,
+                depth: usize,
+                max_depth: usize,
+                out: &mut Vec<(usize, String, String)>,
+                activation: &mut Avm2Activation<'_, 'gc>,
+            ) {
+                if depth > max_depth { return; }
+                let Some(container) = node.as_container() else { return; };
+                let kids: Vec<_> = container.iter_render_list().collect();
+                for child in kids {
+                    let name = child.name().map(|n| n.to_string()).unwrap_or_default();
+                    let class_name = if let Some(obj) = child.object2() {
+                        let val = crate::avm2::Value::from(obj);
+                        let cls = val.instance_class(activation);
+                        cls.name().to_qualified_name(activation.gc()).to_string()
+                    } else {
+                        String::from("<no avm2 object>")
+                    };
+                    out.push((depth, name, class_name));
+                    walk(child, depth + 1, max_depth, out, activation);
+                }
+            }
+            walk(start, 1, max_depth, &mut out, &mut activation);
+            out
+        })
+    }
+
     /// Invoke AS3 `child_name.method_name(label, id)` on a direct child of
     /// the stage's root clip. Mirrors the console LCE's
     /// `IggyPlayerCallMethodRS(movie, &result, path, "Init", 2, [label, id])`
