@@ -348,24 +348,17 @@ impl<'gc> MovieClip<'gc> {
             return;
         }
         let movie = self.movie();
-        // Drain every frame bucket present in eager_tags, not just
-        // 0..header_frames: `load_asset_movie` calls
-        // `set_cur_preload_frame(0)`, which makes `preload_symbol_class`
-        // compute `cur_preload_frame - 1` as a u16 underflow and stash
-        // entries at key 65535. Iterating by known key avoids that
-        // entire class of bug.
-        let frames: Vec<FrameNumber> = self
-            .0
-            .shared
-            .get()
-            .cell
-            .borrow()
-            .eager_tags
-            .keys()
-            .copied()
-            .collect();
+        let num_frames = self.header_frames();
         let mut registered = 0usize;
-        for frame in frames {
+        // Also drain 65535 explicitly: if load_asset_movie called
+        // set_cur_preload_frame(0), the very first SymbolClass tag
+        // encountered during preload stored itself at key
+        // (0u16 - 1) = 65535 via the cur_preload_frame - 1 computation
+        // in preload_symbol_class. Subsequent ShowFrames bump
+        // cur_preload_frame up to normal, so later tags land in their
+        // expected bucket, but that first frame's entries would be
+        // orphaned without this.
+        for frame in (0..num_frames).chain(std::iter::once(u16::MAX)) {
             let Some(eager_tags) = self.0.shared.get().take_eager_tags(frame) else {
                 continue;
             };
@@ -1518,8 +1511,13 @@ impl<'gc> MovieClip<'gc> {
 
     /// Variant of `instantiate_child` that draws the character out of a
     /// foreign movie's library (e.g. an ImportAssets2 sibling SWF)
-    /// rather than this clip's own movie. Parentage, depth, and
-    /// PlaceObject application still happen against `self`.
+    /// rather than this clip's own movie. To keep the first cut
+    /// crash-free we do the minimal placement: instantiate, set
+    /// parent/depth/place_frame/name, apply matrix. No
+    /// post_instantiation, no enter_frame, no added/removed event
+    /// dispatch. Those pull in AS3 paths that assume the child's
+    /// class definitions live in this clip's domain, which is not
+    /// true for an imported sibling SWF.
     fn instantiate_child_from_movie(
         self,
         context: &mut UpdateContext<'gc>,
@@ -1540,15 +1538,11 @@ impl<'gc> MovieClip<'gc> {
             .library_for_movie_mut(src_movie.clone())
             .instantiate_by_id(id, context.gc_context)?;
 
-        let prev_child = self.replace_at_depth(context, child, depth);
+        let _prev_child = self.replace_at_depth(context, child, depth);
         child.set_instantiated_by_timeline(true);
         child.set_depth(depth);
         child.set_parent(context, Some(self.into()));
         child.set_place_frame(self.current_frame());
-
-        let has_object2_allocated = self.object2().is_none();
-        child.set_manual_frame_construct(has_object2_allocated);
-
         child.apply_place_object(context, place_object);
         if let Some(name) = &place_object.name {
             let encoding = swf::SwfStr::encoding_for_version(self.swf_version());
@@ -1559,15 +1553,13 @@ impl<'gc> MovieClip<'gc> {
         if let Some(clip_depth) = place_object.clip_depth {
             child.set_clip_depth(clip_depth.into());
         }
-
-        child.post_instantiation(context, None, Instantiator::Movie, false);
-        child.enter_frame(context);
-
-        if let Some(prev_child) = prev_child {
-            dispatch_removed_event(prev_child, context);
-        }
-        dispatch_added_event_only(child, context);
-        dispatch_added_to_stage_event_only(child, context);
+        tracing::info!(
+            "instantiate_child_from_movie: placed {:?}#{} at depth {} (src={:?})",
+            src_movie.url(),
+            id,
+            depth,
+            self.movie().url()
+        );
         Some(child)
     }
 
