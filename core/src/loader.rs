@@ -333,7 +333,24 @@ impl<'gc> LoadManager<'gc> {
                             let clip = MovieClip::new_import_assets(uc, movie, importer_movie);
 
                             clip.set_cur_preload_frame(0);
-                            uc.library.library_for_movie_mut(clip.movie());
+                            // Inherit the importer's avm2_domain. Without
+                            // this, any AS3 path that looks the imported
+                            // character's library up (set_on_parent_field,
+                            // resolve_place_by_class_name, class lookups)
+                            // hits an unwrap on avm2_domain. Sharing the
+                            // importer's domain is also semantically
+                            // correct: ImportAssets2 siblings are supposed
+                            // to live in the same ApplicationDomain.
+                            let importer_domain = uc
+                                .library
+                                .library_for_movie(importer_movie.movie())
+                                .and_then(|lib| lib.try_avm2_domain());
+                            let imported_lib = uc.library.library_for_movie_mut(clip.movie());
+                            if let Some(domain) = importer_domain
+                                && imported_lib.try_avm2_domain().is_none()
+                            {
+                                imported_lib.set_avm2_domain(domain);
+                            }
                             tracing::debug!("Preloading swf to run exports {:?}", url);
 
                             // Cascade preload up the import tree: pump
