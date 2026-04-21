@@ -4456,27 +4456,68 @@ impl<'gc, 'a> MovieClip<'gc> {
         let encoding = swf::SwfStr::encoding_for_version(movie.version());
         let decoded = swf_str.to_str_lossy(encoding);
         let name_wstr = ruffle_wstr::from_utf8_bytes(decoded.as_bytes());
+        let decoded_log = decoded.clone().into_owned();
 
         let domain = {
-            let lib = context.library.library_for_movie(movie.clone())?;
+            let lib = match context.library.library_for_movie(movie.clone()) {
+                Some(l) => l,
+                None => {
+                    tracing::warn!(
+                        "resolve_place_by_class_name: no library for movie, class={}",
+                        decoded_log
+                    );
+                    return None;
+                }
+            };
             lib.avm2_domain()
         };
 
         let mut activation = crate::avm2::Activation::from_nothing(context);
         let name = crate::string::AvmString::new(activation.gc(), name_wstr);
-        let class_object = domain
-            .get_defined_value_handling_vector(&mut activation, name)
-            .ok()?
-            .as_object()
-            .and_then(|o| o.as_class_object())?;
+        let class_object = match domain.get_defined_value_handling_vector(&mut activation, name) {
+            Ok(v) => match v.as_object().and_then(|o| o.as_class_object()) {
+                Some(c) => c,
+                None => {
+                    tracing::warn!(
+                        "resolve_place_by_class_name: domain value is not a class: {}",
+                        decoded_log
+                    );
+                    return None;
+                }
+            },
+            Err(e) => {
+                tracing::warn!(
+                    "resolve_place_by_class_name: get_defined_value failed for {}: {:?}",
+                    decoded_log,
+                    e
+                );
+                return None;
+            }
+        };
 
         let class_def = class_object.inner_class_definition();
-        let (_movie, char_id) = activation
+        let entry = activation
             .context
             .library
             .avm2_class_registry()
-            .class_symbol(class_def)?;
-        Some(char_id)
+            .class_symbol(class_def);
+        match entry {
+            Some((_movie, char_id)) => {
+                tracing::info!(
+                    "resolve_place_by_class_name: OK {} -> char_id={}",
+                    decoded_log,
+                    char_id
+                );
+                Some(char_id)
+            }
+            None => {
+                tracing::warn!(
+                    "resolve_place_by_class_name: class {} found but no SymbolClass binding",
+                    decoded_log
+                );
+                None
+            }
+        }
     }
 
     #[inline]
