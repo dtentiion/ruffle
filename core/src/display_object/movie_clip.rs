@@ -4706,12 +4706,77 @@ impl<'gc, 'a> MovieClip<'gc> {
             .avm2_class_registry()
             .class_symbol(class_def);
         if let Some((src_movie, char_id)) = entry {
+            // With drain-time binding, this branch now fires for classes
+            // defined in imported SWFs (the registry was populated during
+            // drain). But instantiate_child looks up by id in
+            // self.movie()'s library, so if src_movie != self.movie() we
+            // must mirror the character over. Otherwise the id resolves to
+            // nothing in the importer's library and the field wiring
+            // (e.g. MainMenu.Button1) ends up null.
+            if !Arc::ptr_eq(&src_movie, &movie) {
+                let src_char = activation
+                    .context
+                    .library
+                    .library_for_movie(src_movie.clone())
+                    .and_then(|lib| lib.character_by_id(char_id));
+                if let Some(src_char) = src_char {
+                    let dest_lib = activation
+                        .context
+                        .library
+                        .library_for_movie_mut(movie.clone());
+                    if dest_lib.character_by_id(char_id).is_none() {
+                        dest_lib.register_character(char_id, src_char);
+                        tracing::info!(
+                            "resolve_place_by_class_name: mirrored {:?}#{} into {:?} for class {}",
+                            src_movie.url(),
+                            char_id,
+                            movie.url(),
+                            decoded_log
+                        );
+                    }
+                    // The avm2_class binding on this character in the
+                    // source library was already done during drain, but
+                    // the mirrored copy in the importer's library is a
+                    // fresh registration that needs the same binding so
+                    // construct_as_avm2_object picks up the real class.
+                    let dest_lib = activation
+                        .context
+                        .library
+                        .library_for_movie_mut(movie.clone());
+                    match dest_lib.character_by_id(char_id) {
+                        Some(Character::EditText(et)) => {
+                            et.set_avm2_class(activation.gc(), class_object);
+                        }
+                        Some(Character::Graphic(g)) => {
+                            g.set_avm2_class(activation.gc(), class_object);
+                        }
+                        Some(Character::MovieClip(mc)) => {
+                            mc.set_avm2_class(activation.gc(), Some(class_object));
+                        }
+                        Some(Character::Avm2Button(btn)) => {
+                            btn.set_avm2_class(activation.gc(), class_object);
+                        }
+                        _ => {}
+                    }
+                } else {
+                    tracing::warn!(
+                        "resolve_place_by_class_name: class {} maps to {:?}#{} \
+                         but source library has no character at that id",
+                        decoded_log,
+                        src_movie.url(),
+                        char_id
+                    );
+                }
+            }
             tracing::info!(
                 "resolve_place_by_class_name: OK {} -> char_id={}",
                 decoded_log,
                 char_id
             );
-            return Some((src_movie, char_id));
+            // Return the importer's movie so instantiate_child_from_movie
+            // (which delegates to instantiate_child using self.movie()'s
+            // library) finds the character we just mirrored.
+            return Some((movie, char_id));
         }
 
         // First fallback: 4J's tooling doesn't always emit ImportAssets2
