@@ -4402,25 +4402,80 @@ impl<'gc, 'a> MovieClip<'gc> {
             reader.read_place_object_2_or_3(version)
         }?;
         use swf::PlaceObjectAction;
+
+        // 4J's authored SWFs (Minecraft Legacy Console Edition menus)
+        // use a PlaceObject3 variant that sets HAS_CLASS_NAME without
+        // HAS_CHARACTER. Our swf-crate patch routes that case to Modify,
+        // but if there's no existing child at the target depth we need
+        // to actually *place* one: resolve the class name against the
+        // AVM2 domain, look up the character the SymbolClass tag bound
+        // to that class, and instantiate it.
+        let depth = place_object.depth.into();
+        if matches!(place_object.action, PlaceObjectAction::Modify)
+            && place_object.class_name.is_some()
+            && self.child_by_depth(depth).is_none()
+        {
+            if let Some(id) = self.resolve_place_by_class_name(context, &place_object) {
+                self.instantiate_child(context, id, depth, &place_object);
+                return Ok(());
+            }
+        }
+
         match place_object.action {
             PlaceObjectAction::Place(id) => {
-                self.instantiate_child(context, id, place_object.depth.into(), &place_object);
+                self.instantiate_child(context, id, depth, &place_object);
             }
             PlaceObjectAction::Replace(id) => {
-                if let Some(child) = self.child_by_depth(place_object.depth.into()) {
+                if let Some(child) = self.child_by_depth(depth) {
                     child.replace_with(context, id);
                     child.apply_place_object(context, &place_object);
                     child.set_place_frame(self.current_frame());
                 }
             }
             PlaceObjectAction::Modify => {
-                if let Some(child) = self.child_by_depth(place_object.depth.into()) {
+                if let Some(child) = self.child_by_depth(depth) {
                     child.apply_place_object(context, &place_object);
                 }
             }
         }
 
         Ok(())
+    }
+
+    /// Try to resolve a PlaceObject3's `class_name` field to a character id
+    /// via the AVM2 class registry that SymbolClass tags populate. Returns
+    /// None if AVM2 isn't set up, the class isn't defined in the current
+    /// domain, or no SymbolClass bound the class to a character.
+    fn resolve_place_by_class_name(
+        self,
+        context: &mut UpdateContext<'gc>,
+        place_object: &swf::PlaceObject<'_>,
+    ) -> Option<CharacterId> {
+        let swf_str = place_object.class_name?;
+        let movie = self.movie();
+        let encoding = swf::SwfStr::encoding_for_version(movie.version());
+        let name_wstr = ruffle_wstr::from_utf8_bytes(swf_str.to_str_lossy(encoding).as_bytes());
+
+        let domain = {
+            let lib = context.library.library_for_movie(movie.clone())?;
+            lib.avm2_domain()
+        };
+
+        let mut activation = crate::avm2::Activation::from_nothing(context);
+        let name = crate::string::AvmString::new(activation.gc(), name_wstr);
+        let class_object = domain
+            .get_defined_value_handling_vector(&mut activation, name)
+            .ok()?
+            .as_object()
+            .and_then(|o| o.as_class_object())?;
+
+        let class_def = class_object.inner_class_definition();
+        let (_movie, char_id) = activation
+            .context
+            .library
+            .avm2_class_registry()
+            .class_symbol(class_def)?;
+        Some(char_id)
     }
 
     #[inline]
