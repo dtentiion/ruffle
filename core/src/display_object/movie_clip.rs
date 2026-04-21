@@ -4574,7 +4574,24 @@ impl<'gc, 'a> MovieClip<'gc> {
                     return None;
                 }
             };
-            lib.avm2_domain()
+            // Imported SWFs (ImportAssets2 siblings like 4J's skinHD)
+            // never have their avm2_domain initialized - only the root
+            // movie and Loader-loaded movies get a domain. Calling
+            // `avm2_domain()` on them unwraps None and panics. Bail
+            // gracefully: we can't resolve a class_name against a
+            // domain that doesn't exist, so downstream code takes the
+            // PlaceObject::Place fallback path.
+            match lib.try_avm2_domain() {
+                Some(d) => d,
+                None => {
+                    tracing::info!(
+                        "resolve_place_by_class_name: no avm2_domain for {:?}, class={}",
+                        movie.url(),
+                        decoded_log
+                    );
+                    return None;
+                }
+            }
         };
 
         let mut activation = crate::avm2::Activation::from_nothing(context);
