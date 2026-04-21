@@ -1510,57 +1510,35 @@ impl<'gc> MovieClip<'gc> {
     }
 
     /// Variant of `instantiate_child` that draws the character out of a
-    /// foreign movie's library (e.g. an ImportAssets2 sibling SWF)
-    /// rather than this clip's own movie. To keep the first cut
-    /// crash-free we do the minimal placement: instantiate, set
-    /// parent/depth/place_frame/name, apply matrix. No
-    /// post_instantiation, no enter_frame, no added/removed event
-    /// dispatch. Those pull in AS3 paths that assume the child's
-    /// class definitions live in this clip's domain, which is not
-    /// true for an imported sibling SWF.
+    /// foreign movie's library (e.g. an ImportAssets2 sibling SWF).
+    /// First cut: log only, return None. We want to confirm on device
+    /// that the resolver / drain chain is working without the
+    /// downstream AS3 constructor paths crashing.
     fn instantiate_child_from_movie(
         self,
         context: &mut UpdateContext<'gc>,
         src_movie: Arc<SwfMovie>,
         id: CharacterId,
         depth: Depth,
-        place_object: &swf::PlaceObject,
+        _place_object: &swf::PlaceObject,
     ) -> Option<DisplayObject<'gc>> {
         if Arc::ptr_eq(&src_movie, &self.movie()) {
-            return self.instantiate_child(context, id, depth, place_object);
+            return self.instantiate_child(context, id, depth, _place_object);
         }
-        if self.has_child_at_depth(depth) {
-            context.avm_warning(&format!("Failed to place object at depth {depth}."));
-            return None;
-        }
-        let child = context
+        let have_char = context
             .library
-            .library_for_movie_mut(src_movie.clone())
-            .instantiate_by_id(id, context.gc_context)?;
-
-        let _prev_child = self.replace_at_depth(context, child, depth);
-        child.set_instantiated_by_timeline(true);
-        child.set_depth(depth);
-        child.set_parent(context, Some(self.into()));
-        child.set_place_frame(self.current_frame());
-        child.apply_place_object(context, place_object);
-        if let Some(name) = &place_object.name {
-            let encoding = swf::SwfStr::encoding_for_version(self.swf_version());
-            let name = AvmString::new(context.gc(), name.decode(encoding));
-            child.set_name(context.gc(), name);
-            child.set_has_explicit_name(true);
-        }
-        if let Some(clip_depth) = place_object.clip_depth {
-            child.set_clip_depth(clip_depth.into());
-        }
+            .library_for_movie(src_movie.clone())
+            .and_then(|l| l.character_by_id(id))
+            .is_some();
         tracing::info!(
-            "instantiate_child_from_movie: placed {:?}#{} at depth {} (src={:?})",
+            "instantiate_child_from_movie: would place {:?}#{} at depth {} (src={:?}), char_present={}",
             src_movie.url(),
             id,
             depth,
-            self.movie().url()
+            self.movie().url(),
+            have_char
         );
-        Some(child)
+        None
     }
 
     /// Instantiate a given child object on the timeline at a given depth.
