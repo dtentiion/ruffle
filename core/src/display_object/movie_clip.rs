@@ -4454,7 +4454,8 @@ impl<'gc, 'a> MovieClip<'gc> {
         let swf_str = place_object.class_name?;
         let movie = self.movie();
         let encoding = swf::SwfStr::encoding_for_version(movie.version());
-        let name_wstr = ruffle_wstr::from_utf8_bytes(swf_str.to_str_lossy(encoding).as_bytes());
+        let decoded = swf_str.to_str_lossy(encoding);
+        let name_wstr = ruffle_wstr::from_utf8_bytes(decoded.as_bytes());
 
         let domain = {
             let lib = context.library.library_for_movie(movie.clone())?;
