@@ -2588,10 +2588,18 @@ impl Player {
             let method_avm = AvmString::new_utf8(activation.gc(), method_name);
             let multiname = Multiname::new(ns, method_avm);
             let label_avm = AvmString::new_utf8(activation.gc(), label);
-            let args = [Avm2Value::String(label_avm), Avm2Value::Number(id)];
+            let two_args = [Avm2Value::String(label_avm), Avm2Value::Number(id)];
+            let one_arg = [Avm2Value::String(label_avm)];
+            // LCE's FJ_Button exposes Init(label, id) but SetLabel(label);
+            // pick the arity that matches the callee so we don't trip
+            // ArgumentError #1063.
+            let args: &[Avm2Value] = match method_name {
+                "SetLabel" => &one_arg,
+                _ => &two_args,
+            };
             match Avm2Value::from(obj).call_property(
                 &multiname,
-                FunctionArgs::from_slice(&args),
+                FunctionArgs::from_slice(args),
                 &mut activation,
             ) {
                 Ok(ret) => format!("ok: {ret:?}"),
