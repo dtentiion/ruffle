@@ -2173,7 +2173,7 @@ impl<'gc> MovieClip<'gc> {
         let class_name = class_object.inner_class_definition().name();
         let has_object = self.0.object2.get().is_some();
         tracing::info!(
-            "construct_as_avm2_object: class={} has_object={}",
+            "construct_as_avm2_object: class={:?} has_object={}",
             class_name,
             has_object
         );
@@ -2184,9 +2184,9 @@ impl<'gc> MovieClip<'gc> {
                 class_object.call_init(object.into(), Avm2FunctionArgs::empty(), &mut activation);
 
             match result {
-                Ok(_) => tracing::info!("ctor_ok: {}", class_name),
+                Ok(_) => tracing::info!("ctor_ok: {:?}", class_name),
                 Err(e) => {
-                    tracing::warn!("ctor_err: {} => {:?}", class_name, e);
+                    tracing::warn!("ctor_err: {:?} => {:?}", class_name, e);
                     Avm2::uncaught_error(
                         &mut activation,
                         Some(self.into()),
