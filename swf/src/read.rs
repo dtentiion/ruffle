@@ -1940,7 +1940,13 @@ impl<'a> Reader<'a> {
                 let id = self.read_u16()?;
                 PlaceObjectAction::Replace(id)
             }
-            _ => return Err(Error::invalid_data("Invalid PlaceObject type")),
+            // The SWF spec requires at least one of MOVE or HAS_CHARACTER
+            // to be set, but 4J Studios' authored SWFs (Minecraft Legacy
+            // Console Edition's UI) leave both flags off on some
+            // PlaceObject3 tags and rely on Flash Player being lenient.
+            // Fall back to Modify rather than failing the whole tag,
+            // since that matches what the legacy Flash runtime did.
+            (false, false) => PlaceObjectAction::Modify,
         };
         let matrix = if flags.contains(PlaceFlag::HAS_MATRIX) {
             Some(self.read_matrix()?)
