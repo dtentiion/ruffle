@@ -2513,6 +2513,93 @@ impl Player {
         });
     }
 
+    /// List every direct child of the stage's root clip. Each entry is
+    /// `(instance_name, class_name)`. Instance names come from the SWF's
+    /// PlaceObject tags; unnamed children appear with an empty string.
+    ///
+    /// Added for the LCE-iOS port: 4J's menu framework drives the SWF by
+    /// calling AS3 methods on buttons referenced by instance name (via
+    /// IggyPlayerCallMethodRS on console). The host needs to enumerate
+    /// named children at runtime to know what to talk to.
+    pub fn enumerate_root_children(&mut self) -> Vec<(String, String)> {
+        use crate::avm2::Activation as Avm2Activation;
+        use crate::display_object::{TDisplayObject, TDisplayObjectContainer};
+        self.mutate_with_update_context(|context| {
+            let Some(root) = context.stage.root_clip() else { return vec![]; };
+            let Some(container) = root.as_container() else { return vec![]; };
+            let children: Vec<_> = container.iter_render_list().collect();
+            let mut activation = Avm2Activation::from_nothing(context);
+            children
+                .into_iter()
+                .map(|child| {
+                    let name = child
+                        .name()
+                        .map(|n| n.to_string())
+                        .unwrap_or_default();
+                    let class_name = if let Some(obj) = child.object2() {
+                        let val = crate::avm2::Value::from(obj);
+                        let cls = val.instance_class(&mut activation);
+                        cls.name().to_qualified_name(activation.gc()).to_string()
+                    } else {
+                        String::from("<no avm2 object>")
+                    };
+                    (name, class_name)
+                })
+                .collect()
+        })
+    }
+
+    /// Invoke AS3 `child_name.method_name(label, id)` on a direct child of
+    /// the stage's root clip. Mirrors the console LCE's
+    /// `IggyPlayerCallMethodRS(movie, &result, path, "Init", 2, [label, id])`
+    /// pattern exactly, since every LCE button/label is driven this way.
+    ///
+    /// Returns a short human-readable status string (`"ok: <return value>"`
+    /// on success, `"err: <reason>"` on any failure along the path) so the
+    /// caller can log it without needing to marshal AVM errors across FFI.
+    pub fn call_init_on_named_child(
+        &mut self,
+        child_name: &str,
+        method_name: &str,
+        label: &str,
+        id: f64,
+    ) -> String {
+        use crate::avm2::{
+            Activation as Avm2Activation, AvmString, FunctionArgs, Multiname, Value as Avm2Value,
+        };
+        use crate::display_object::{TDisplayObject, TDisplayObjectContainer};
+        use crate::string::WString;
+        self.mutate_with_update_context(|context| {
+            let Some(root) = context.stage.root_clip() else {
+                return String::from("err: no root_clip");
+            };
+            let Some(container) = root.as_container() else {
+                return String::from("err: root not a container");
+            };
+            let name_ws = WString::from_utf8(child_name);
+            let Some(child) = container.child_by_name(&name_ws, false) else {
+                return format!("err: no child named '{child_name}'");
+            };
+            let Some(obj) = child.object2() else {
+                return String::from("err: child has no avm2 object");
+            };
+            let mut activation = Avm2Activation::from_nothing(context);
+            let ns = activation.avm2().find_public_namespace();
+            let method_avm = AvmString::new_utf8(activation.gc(), method_name);
+            let multiname = Multiname::new(ns, method_avm);
+            let label_avm = AvmString::new_utf8(activation.gc(), label);
+            let args = [Avm2Value::String(label_avm), Avm2Value::Number(id)];
+            match Avm2Value::from(obj).call_property(
+                &multiname,
+                FunctionArgs::from_slice(&args),
+                &mut activation,
+            ) {
+                Ok(ret) => format!("ok: {ret:?}"),
+                Err(e) => format!("err: call failed: {e:?}"),
+            }
+        })
+    }
+
     pub fn fetch(
         &self,
         mut request: Request,
