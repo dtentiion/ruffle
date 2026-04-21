@@ -4705,6 +4705,36 @@ impl<'gc, 'a> MovieClip<'gc> {
                     decoded_log
                 );
             }
+            // Bind the transplanted character's avm2_class so that when it
+            // later goes through construct_as_avm2_object, it gets the real
+            // class instead of falling back to flash.display.MovieClip.
+            // The built-in SymbolClass processing path does this for
+            // characters whose linkage lives in the same SWF, but for
+            // cross-SWF imports the regular path never runs, so do it here.
+            let bound_kind: &'static str = match dest_lib.character_by_id(char_id) {
+                Some(Character::MovieClip(mc)) => {
+                    mc.set_avm2_class(activation.gc(), Some(class_object));
+                    "MovieClip"
+                }
+                Some(Character::EditText(et)) => {
+                    et.set_avm2_class(activation.gc(), class_object);
+                    "EditText"
+                }
+                Some(Character::Graphic(g)) => {
+                    g.set_avm2_class(activation.gc(), class_object);
+                    "Graphic"
+                }
+                Some(Character::Avm2Button(btn)) => {
+                    btn.set_avm2_class(activation.gc(), class_object);
+                    "Avm2Button"
+                }
+                _ => "other",
+            };
+            tracing::info!(
+                "resolve_place_by_class_name: bound avm2_class for {} ({})",
+                decoded_log,
+                bound_kind
+            );
             activation
                 .context
                 .library
