@@ -16,7 +16,10 @@ use crate::backend::ui::MouseCursor;
 use crate::binary_data::BinaryData;
 use crate::character::{BitmapCharacter, Character, CompressedBitmap};
 use crate::context::{ActionType, RenderContext, UpdateContext};
-use crate::display_object::container::{ChildContainer, dispatch_removed_event};
+use crate::display_object::container::{
+    ChildContainer, dispatch_added_event_only, dispatch_added_to_stage_event_only,
+    dispatch_removed_event,
+};
 use crate::display_object::interactive::{
     InteractiveObject, InteractiveObjectBase, TInteractiveObject,
 };
@@ -318,6 +321,37 @@ impl<'gc> MovieClip<'gc> {
         let data = MovieClipData::new(shared, context.gc());
         data.flags.set(MovieClipFlags::PLAYING);
         MovieClip(Gc::new(context.gc(), data))
+    }
+
+    /// Drain SymbolClass entries from this clip's preloaded eager tags
+    /// into the pending imported symbols registry, associating each
+    /// class name with this clip's own movie. Used only by
+    /// `load_asset_movie` to prime the lazy resolver for imported SWFs
+    /// that never have their frames executed. Unlike
+    /// `run_abc_and_symbol_tags` this deliberately does not try to run
+    /// the imported ABC tags; the importer already has its own copy of
+    /// the class definitions and we only need the name -> character id
+    /// mapping.
+    pub fn drain_symbol_class_for_import(self, context: &mut UpdateContext<'gc>) {
+        let movie = self.movie();
+        let num_frames = self.header_frames();
+        for frame in 0..num_frames {
+            let Some(eager_tags) = self.0.shared.get().take_eager_tags(frame) else {
+                continue;
+            };
+            for (class_name, id) in eager_tags.symbolclass_names {
+                tracing::debug!(
+                    "Queueing imported SymbolClass: {:?} -> ({:?}, {})",
+                    class_name,
+                    movie.url(),
+                    id
+                );
+                context
+                    .library
+                    .avm2_class_registry_mut()
+                    .register_pending_imported_symbol(class_name, movie.clone(), id);
+            }
+        }
     }
 
     /// Construct a movie clip that represents the root movie
@@ -1450,6 +1484,61 @@ impl<'gc> MovieClip<'gc> {
             // in the meantime, it should absolutely run again.
             self.set_last_queued_script_frame(None);
         }
+    }
+
+    /// Variant of `instantiate_child` that draws the character out of a
+    /// foreign movie's library (e.g. an ImportAssets2 sibling SWF)
+    /// rather than this clip's own movie. Parentage, depth, and
+    /// PlaceObject application still happen against `self`.
+    fn instantiate_child_from_movie(
+        self,
+        context: &mut UpdateContext<'gc>,
+        src_movie: Arc<SwfMovie>,
+        id: CharacterId,
+        depth: Depth,
+        place_object: &swf::PlaceObject,
+    ) -> Option<DisplayObject<'gc>> {
+        if Arc::ptr_eq(&src_movie, &self.movie()) {
+            return self.instantiate_child(context, id, depth, place_object);
+        }
+        if self.has_child_at_depth(depth) {
+            context.avm_warning(&format!("Failed to place object at depth {depth}."));
+            return None;
+        }
+        let child = context
+            .library
+            .library_for_movie_mut(src_movie.clone())
+            .instantiate_by_id(id, context.gc_context)?;
+
+        let prev_child = self.replace_at_depth(context, child, depth);
+        child.set_instantiated_by_timeline(true);
+        child.set_depth(depth);
+        child.set_parent(context, Some(self.into()));
+        child.set_place_frame(self.current_frame());
+
+        let has_object2_allocated = self.object2().is_none();
+        child.set_manual_frame_construct(has_object2_allocated);
+
+        child.apply_place_object(context, place_object);
+        if let Some(name) = &place_object.name {
+            let encoding = swf::SwfStr::encoding_for_version(self.swf_version());
+            let name = AvmString::new(context.gc(), name.decode(encoding));
+            child.set_name(context.gc(), name);
+            child.set_has_explicit_name(true);
+        }
+        if let Some(clip_depth) = place_object.clip_depth {
+            child.set_clip_depth(clip_depth.into());
+        }
+
+        child.post_instantiation(context, None, Instantiator::Movie, false);
+        child.enter_frame(context);
+
+        if let Some(prev_child) = prev_child {
+            dispatch_removed_event(prev_child, context);
+        }
+        dispatch_added_event_only(child, context);
+        dispatch_added_to_stage_event_only(child, context);
+        Some(child)
     }
 
     /// Instantiate a given child object on the timeline at a given depth.
@@ -4415,8 +4504,16 @@ impl<'gc, 'a> MovieClip<'gc> {
             && place_object.class_name.is_some()
             && self.child_by_depth(depth).is_none()
         {
-            if let Some(id) = self.resolve_place_by_class_name(context, &place_object) {
-                self.instantiate_child(context, id, depth, &place_object);
+            if let Some((src_movie, id)) =
+                self.resolve_place_by_class_name(context, &place_object)
+            {
+                self.instantiate_child_from_movie(
+                    context,
+                    src_movie,
+                    id,
+                    depth,
+                    &place_object,
+                );
                 return Ok(());
             }
         }
@@ -4442,15 +4539,16 @@ impl<'gc, 'a> MovieClip<'gc> {
         Ok(())
     }
 
-    /// Try to resolve a PlaceObject3's `class_name` field to a character id
-    /// via the AVM2 class registry that SymbolClass tags populate. Returns
-    /// None if AVM2 isn't set up, the class isn't defined in the current
-    /// domain, or no SymbolClass bound the class to a character.
+    /// Try to resolve a PlaceObject3's `class_name` field to a
+    /// (source movie, character id) pair via the AVM2 class registry
+    /// that SymbolClass tags populate. The source movie is the SWF
+    /// whose library owns the character; for imports this is a
+    /// different movie from `self.movie()`.
     fn resolve_place_by_class_name(
         self,
         context: &mut UpdateContext<'gc>,
         place_object: &swf::PlaceObject<'_>,
-    ) -> Option<CharacterId> {
+    ) -> Option<(Arc<SwfMovie>, CharacterId)> {
         let swf_str = place_object.class_name?;
         let movie = self.movie();
         let encoding = swf::SwfStr::encoding_for_version(movie.version());
@@ -4501,28 +4599,26 @@ impl<'gc, 'a> MovieClip<'gc> {
             .library
             .avm2_class_registry()
             .class_symbol(class_def);
-        if let Some((_movie, char_id)) = entry {
+        if let Some((src_movie, char_id)) = entry {
             tracing::info!(
                 "resolve_place_by_class_name: OK {} -> char_id={}",
                 decoded_log,
                 char_id
             );
-            return Some(char_id);
+            return Some((src_movie, char_id));
         }
 
-        // Fallback for 4J's tooling (Minecraft LCE menus): MainMenu never
-        // emits SymbolClass for the classes it references via PO3
-        // class_name. The classes come from a sibling SWF pulled in with
-        // ImportAssets2, where the linkage name is exactly the fully
-        // qualified class name. export_assets already copied the
-        // character into MainMenu's library at the import id, so looking
-        // up by name directly yields the right id.
-        let fallback_id = activation
+        // First fallback: 4J's tooling doesn't always emit ImportAssets2
+        // entries, but when it does the linkage name is exactly the
+        // fully qualified class name. export_assets has already copied
+        // the imported character into the importer's library at the
+        // import id, so this is the cheapest path.
+        let by_import_name = activation
             .context
             .library
             .library_for_movie(movie.clone())
             .and_then(|lib| lib.character_id_by_import_name(name));
-        if let Some(char_id) = fallback_id {
+        if let Some(char_id) = by_import_name {
             tracing::info!(
                 "resolve_place_by_class_name: import-name fallback hit {} -> char_id={}",
                 decoded_log,
@@ -4533,11 +4629,37 @@ impl<'gc, 'a> MovieClip<'gc> {
                 .library
                 .avm2_class_registry_mut()
                 .set_class_symbol(class_def, movie.clone(), char_id);
-            return Some(char_id);
+            return Some((movie, char_id));
+        }
+
+        // Second fallback: pending SymbolClass entries drained from
+        // imported SWFs that finished preloading before the importer's
+        // ABC had registered the class. The character lives in that
+        // SWF's library, not ours, so return its movie so the caller
+        // can look up the right library.
+        let pending = activation
+            .context
+            .library
+            .avm2_class_registry()
+            .pending_imported_symbol(name.as_wstr());
+        if let Some((src_movie, char_id)) = pending {
+            tracing::info!(
+                "resolve_place_by_class_name: pending-import fallback hit {} -> {:?}#{}",
+                decoded_log,
+                src_movie.url(),
+                char_id
+            );
+            activation
+                .context
+                .library
+                .avm2_class_registry_mut()
+                .set_class_symbol(class_def, src_movie.clone(), char_id);
+            return Some((src_movie, char_id));
         }
 
         tracing::warn!(
-            "resolve_place_by_class_name: class {} found but no SymbolClass binding and no import-name match",
+            "resolve_place_by_class_name: class {} defined but no SymbolClass \
+             binding, no import-name match, and no pending import",
             decoded_log
         );
         None

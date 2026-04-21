@@ -345,6 +345,15 @@ impl<'gc> LoadManager<'gc> {
                                 url,
                                 res
                             );
+
+                            // Imported SWFs never have their frames
+                            // executed, so their SymbolClass tags never
+                            // register via the normal run_abc_and_symbol_tags
+                            // path. Drain them into a pending map keyed by
+                            // class name so the importer's resolver can
+                            // pick them up once its own ABC has defined
+                            // the matching classes.
+                            clip.drain_symbol_class_for_import(uc);
                         } else {
                             tracing::warn!(
                                 "Unsupported content type for ImportAssets: {:?}",

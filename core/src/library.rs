@@ -49,6 +49,14 @@ pub struct Avm2ClassRegistry<'gc> {
     /// A list of AVM2 class objects and the character IDs they are expected to
     /// instantiate.
     class_map: WeakValueHashMap<Avm2Class<'gc>, WeakMovieSymbol>,
+
+    /// SymbolClass entries from imported (ImportAssets2) SWFs that finished
+    /// preloading before the importer's own ABC had a chance to register the
+    /// corresponding class definitions. Imported SWFs never have their
+    /// frames executed, so the normal `run_abc_and_symbol_tags` path never
+    /// fires for them; we stash the entries here by class name and resolve
+    /// them lazily the first time the importer looks the class up.
+    pending_imported_symbols: HashMap<crate::string::WString, (Arc<SwfMovie>, CharacterId)>,
 }
 
 unsafe impl<'gc> Collect<'gc> for Avm2ClassRegistry<'gc> {
@@ -69,7 +77,29 @@ impl<'gc> Avm2ClassRegistry<'gc> {
     pub fn new() -> Self {
         Self {
             class_map: WeakValueHashMap::new(),
+            pending_imported_symbols: HashMap::new(),
         }
+    }
+
+    /// Stash a SymbolClass entry from an imported SWF by class name so
+    /// the importer's resolver can pick it up later.
+    pub fn register_pending_imported_symbol(
+        &mut self,
+        class_name: crate::string::WString,
+        movie: Arc<SwfMovie>,
+        symbol: CharacterId,
+    ) {
+        self.pending_imported_symbols
+            .entry(class_name)
+            .or_insert((movie, symbol));
+    }
+
+    /// Look up a pending imported SymbolClass entry by class name.
+    pub fn pending_imported_symbol(
+        &self,
+        class_name: &crate::string::WStr,
+    ) -> Option<(Arc<SwfMovie>, CharacterId)> {
+        self.pending_imported_symbols.get(class_name).cloned()
     }
 
     /// Retrieve the library symbol for a given AVM2 class object.
