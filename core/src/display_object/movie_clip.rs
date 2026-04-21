@@ -348,9 +348,24 @@ impl<'gc> MovieClip<'gc> {
             return;
         }
         let movie = self.movie();
-        let num_frames = self.header_frames();
+        // Drain every frame bucket present in eager_tags, not just
+        // 0..header_frames: `load_asset_movie` calls
+        // `set_cur_preload_frame(0)`, which makes `preload_symbol_class`
+        // compute `cur_preload_frame - 1` as a u16 underflow and stash
+        // entries at key 65535. Iterating by known key avoids that
+        // entire class of bug.
+        let frames: Vec<FrameNumber> = self
+            .0
+            .shared
+            .get()
+            .cell
+            .borrow()
+            .eager_tags
+            .keys()
+            .copied()
+            .collect();
         let mut registered = 0usize;
-        for frame in 0..num_frames {
+        for frame in frames {
             let Some(eager_tags) = self.0.shared.get().take_eager_tags(frame) else {
                 continue;
             };
