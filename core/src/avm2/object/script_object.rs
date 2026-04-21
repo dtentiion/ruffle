@@ -278,12 +278,16 @@ impl<'gc> ScriptObjectWrapper<'gc> {
 
     #[inline(always)]
     pub fn get_slot(self, id: usize) -> Value<'gc> {
+        // Out-of-bounds slot access returns Undefined rather than panicking.
+        // This matches Flash's own forgiving slot semantics and keeps cross-SWF
+        // class-binding corner cases (e.g. an instance whose slot table wasn't
+        // sized for every ancestor trait) from killing the process mid-frame.
         self.0
             .slots
             .get(id)
             .cloned()
             .map(|s| s.get())
-            .expect("Slot index out of bounds")
+            .unwrap_or(Value::Undefined)
     }
 
     /// Set a slot by its index.
