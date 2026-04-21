@@ -2565,10 +2565,10 @@ impl Player {
         id: f64,
     ) -> String {
         use crate::avm2::{
-            Activation as Avm2Activation, AvmString, FunctionArgs, Multiname, Value as Avm2Value,
+            Activation as Avm2Activation, FunctionArgs, Multiname, Value as Avm2Value,
         };
         use crate::display_object::{TDisplayObject, TDisplayObjectContainer};
-        use crate::string::WString;
+        use crate::string::{AvmString, WString};
         self.mutate_with_update_context(|context| {
             let Some(root) = context.stage.root_clip() else {
                 return String::from("err: no root_clip");
