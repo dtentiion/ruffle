@@ -4672,7 +4672,10 @@ impl<'gc, 'a> MovieClip<'gc> {
             return Some((src_movie, char_id));
         }
 
-        tracing::warn!(
+        // Demoted from warn to trace: fires every frame for every PO3
+        // class_name tag that misses and drowns the overlay's 10-line
+        // tail, hiding the startup diagnostics we need.
+        tracing::trace!(
             "resolve_place_by_class_name: class {} defined but no SymbolClass \
              binding, no import-name match, and no pending import",
             decoded_log
