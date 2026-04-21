@@ -455,6 +455,32 @@ impl<'gc> MovieClip<'gc> {
                             btn.set_avm2_class(activation.gc(), class_object);
                             bound += 1;
                         }
+                        Some(Character::Bitmap { .. }) => {
+                            // Bitmaps bind via a separate BitmapClass type that
+                            // captures whether the AS3 class extends Bitmap or
+                            // BitmapData. Without this, AS3's BitmapData.init
+                            // panics on an unwrap because the backing bitmap
+                            // is not associated with the class.
+                            if let Some(bitmap_class) = BitmapClass::from_class_object(
+                                class_object,
+                                activation.context,
+                            ) {
+                                let library = activation
+                                    .context
+                                    .library
+                                    .library_for_movie_mut(movie.clone());
+                                if let Some(Character::Bitmap(bitmap)) =
+                                    library.character_by_id(id)
+                                {
+                                    BitmapCharacter::set_avm2_class(
+                                        bitmap,
+                                        bitmap_class,
+                                        activation.gc(),
+                                    );
+                                    bound += 1;
+                                }
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -4755,6 +4781,30 @@ impl<'gc, 'a> MovieClip<'gc> {
                         }
                         Some(Character::Avm2Button(btn)) => {
                             btn.set_avm2_class(activation.gc(), class_object);
+                        }
+                        Some(Character::Bitmap { .. }) => {
+                            // Bitmaps have a different binding API so that
+                            // AS3's BitmapData.init can distinguish whether
+                            // the declared class extends Bitmap or BitmapData.
+                            // Missing this leaves init with a None unwrap.
+                            if let Some(bitmap_class) = BitmapClass::from_class_object(
+                                class_object,
+                                activation.context,
+                            ) {
+                                let dest_lib = activation
+                                    .context
+                                    .library
+                                    .library_for_movie_mut(movie.clone());
+                                if let Some(Character::Bitmap(bitmap)) =
+                                    dest_lib.character_by_id(char_id)
+                                {
+                                    BitmapCharacter::set_avm2_class(
+                                        bitmap,
+                                        bitmap_class,
+                                        activation.gc(),
+                                    );
+                                }
+                            }
                         }
                         _ => {}
                     }
