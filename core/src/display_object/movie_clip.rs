@@ -4501,23 +4501,46 @@ impl<'gc, 'a> MovieClip<'gc> {
             .library
             .avm2_class_registry()
             .class_symbol(class_def);
-        match entry {
-            Some((_movie, char_id)) => {
-                tracing::info!(
-                    "resolve_place_by_class_name: OK {} -> char_id={}",
-                    decoded_log,
-                    char_id
-                );
-                Some(char_id)
-            }
-            None => {
-                tracing::warn!(
-                    "resolve_place_by_class_name: class {} found but no SymbolClass binding",
-                    decoded_log
-                );
-                None
-            }
+        if let Some((_movie, char_id)) = entry {
+            tracing::info!(
+                "resolve_place_by_class_name: OK {} -> char_id={}",
+                decoded_log,
+                char_id
+            );
+            return Some(char_id);
         }
+
+        // Fallback for 4J's tooling (Minecraft LCE menus): MainMenu never
+        // emits SymbolClass for the classes it references via PO3
+        // class_name. The classes come from a sibling SWF pulled in with
+        // ImportAssets2, where the linkage name is exactly the fully
+        // qualified class name. export_assets already copied the
+        // character into MainMenu's library at the import id, so looking
+        // up by name directly yields the right id.
+        let fallback_id = activation
+            .context
+            .library
+            .library_for_movie(movie.clone())
+            .and_then(|lib| lib.character_id_by_import_name(name));
+        if let Some(char_id) = fallback_id {
+            tracing::info!(
+                "resolve_place_by_class_name: import-name fallback hit {} -> char_id={}",
+                decoded_log,
+                char_id
+            );
+            activation
+                .context
+                .library
+                .avm2_class_registry_mut()
+                .set_class_symbol(class_def, movie.clone(), char_id);
+            return Some(char_id);
+        }
+
+        tracing::warn!(
+            "resolve_place_by_class_name: class {} found but no SymbolClass binding and no import-name match",
+            decoded_log
+        );
+        None
     }
 
     #[inline]
