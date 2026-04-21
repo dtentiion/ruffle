@@ -2549,6 +2549,46 @@ impl Player {
         })
     }
 
+    /// Like `enumerate_root_children`, but one level deeper: returns the
+    /// direct children of the named child. Used by the iOS host to verify
+    /// whether e.g. `Button1` actually has its timeline-placed
+    /// `FJ_TextContainer` subclip - when PlaceObject places an instance by
+    /// class name only (no char id), the class's SymbolClass binding has to
+    /// be consulted to clone the bound sprite's timeline into the instance.
+    pub fn enumerate_named_child_children(
+        &mut self,
+        child_name: &str,
+    ) -> Vec<(String, String)> {
+        use crate::avm2::Activation as Avm2Activation;
+        use crate::display_object::{TDisplayObject, TDisplayObjectContainer};
+        use crate::string::WString;
+        self.mutate_with_update_context(|context| {
+            let Some(root) = context.stage.root_clip() else { return vec![]; };
+            let Some(root_container) = root.as_container() else { return vec![]; };
+            let name_ws = WString::from_utf8(child_name);
+            let Some(child) = root_container.child_by_name(&name_ws, false) else {
+                return vec![];
+            };
+            let Some(container) = child.as_container() else { return vec![]; };
+            let children: Vec<_> = container.iter_render_list().collect();
+            let mut activation = Avm2Activation::from_nothing(context);
+            children
+                .into_iter()
+                .map(|c| {
+                    let name = c.name().map(|n| n.to_string()).unwrap_or_default();
+                    let class_name = if let Some(obj) = c.object2() {
+                        let val = crate::avm2::Value::from(obj);
+                        let cls = val.instance_class(&mut activation);
+                        cls.name().to_qualified_name(activation.gc()).to_string()
+                    } else {
+                        String::from("<no avm2 object>")
+                    };
+                    (name, class_name)
+                })
+                .collect()
+        })
+    }
+
     /// Invoke AS3 `child_name.method_name(label, id)` on a direct child of
     /// the stage's root clip. Mirrors the console LCE's
     /// `IggyPlayerCallMethodRS(movie, &result, path, "Init", 2, [label, id])`
