@@ -1509,43 +1509,20 @@ impl<'gc> MovieClip<'gc> {
         }
     }
 
-    /// Variant of `instantiate_child` that draws the character out of a
-    /// foreign movie's library (e.g. an ImportAssets2 sibling SWF).
-    /// Narrow placement path to isolate crashes: walk one step at a
-    /// time. Right now: instantiate, replace_at_depth, set_parent,
-    /// set_depth. No apply_place_object (no matrix yet), no name
-    /// setting, no AS3 event dispatch. If this step is stable we add
-    /// the next.
+    /// After the resolver transplants imported characters into this
+    /// clip's own library, the regular `instantiate_child` path works
+    /// for them: class is defined in our domain, character is in our
+    /// library under the same id. Keep the signature for callers
+    /// that already have a src_movie handy.
     fn instantiate_child_from_movie(
         self,
         context: &mut UpdateContext<'gc>,
-        src_movie: Arc<SwfMovie>,
+        _src_movie: Arc<SwfMovie>,
         id: CharacterId,
         depth: Depth,
-        _place_object: &swf::PlaceObject,
+        place_object: &swf::PlaceObject,
     ) -> Option<DisplayObject<'gc>> {
-        if Arc::ptr_eq(&src_movie, &self.movie()) {
-            return self.instantiate_child(context, id, depth, _place_object);
-        }
-        if self.has_child_at_depth(depth) {
-            return None;
-        }
-        let child = context
-            .library
-            .library_for_movie_mut(src_movie.clone())
-            .instantiate_by_id(id, context.gc_context)?;
-        tracing::info!(
-            "instantiate_child_from_movie: instantiated {:?}#{} at depth {}",
-            src_movie.url(),
-            id,
-            depth
-        );
-        let _prev = self.replace_at_depth(context, child, depth);
-        tracing::info!("instantiate_child_from_movie: replace_at_depth OK");
-        child.set_depth(depth);
-        child.set_parent(context, Some(self.into()));
-        tracing::info!("instantiate_child_from_movie: set_parent OK");
-        Some(child)
+        self.instantiate_child(context, id, depth, place_object)
     }
 
     /// Instantiate a given child object on the timeline at a given depth.
@@ -4658,27 +4635,53 @@ impl<'gc, 'a> MovieClip<'gc> {
 
         // Second fallback: pending SymbolClass entries drained from
         // imported SWFs that finished preloading before the importer's
-        // ABC had registered the class. The character lives in that
-        // SWF's library, not ours, so return its movie so the caller
-        // can look up the right library.
+        // ABC registered the class. To keep the regular
+        // instantiate_child path (with full AS3 construction) usable,
+        // transplant the character from the imported SWF's library
+        // into this importer's library under the same id. That
+        // sidesteps the need for a separate cross-movie placement
+        // function with its own defensive AS3 skips.
         let pending = activation
             .context
             .library
             .avm2_class_registry()
             .pending_imported_symbol(name.as_wstr());
         if let Some((src_movie, char_id)) = pending {
-            tracing::info!(
-                "resolve_place_by_class_name: pending-import fallback hit {} -> {:?}#{}",
-                decoded_log,
-                src_movie.url(),
-                char_id
-            );
+            let src_char = activation
+                .context
+                .library
+                .library_for_movie(src_movie.clone())
+                .and_then(|lib| lib.character_by_id(char_id));
+            let Some(src_char) = src_char else {
+                tracing::warn!(
+                    "resolve_place_by_class_name: pending match {} -> {:?}#{} \
+                     but source library has no character at that id",
+                    decoded_log,
+                    src_movie.url(),
+                    char_id
+                );
+                return None;
+            };
+            let dest_lib = activation
+                .context
+                .library
+                .library_for_movie_mut(movie.clone());
+            if dest_lib.character_by_id(char_id).is_none() {
+                dest_lib.register_character(char_id, src_char);
+                tracing::info!(
+                    "resolve_place_by_class_name: transplanted {:?}#{} into {:?} for class {}",
+                    src_movie.url(),
+                    char_id,
+                    movie.url(),
+                    decoded_log
+                );
+            }
             activation
                 .context
                 .library
                 .avm2_class_registry_mut()
-                .set_class_symbol(class_def, src_movie.clone(), char_id);
-            return Some((src_movie, char_id));
+                .set_class_symbol(class_def, movie.clone(), char_id);
+            return Some((movie, char_id));
         }
 
         // Demoted from warn to trace: fires every frame for every PO3
