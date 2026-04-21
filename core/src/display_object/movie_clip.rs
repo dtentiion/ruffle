@@ -351,6 +351,7 @@ impl<'gc> MovieClip<'gc> {
         let num_frames = self.header_frames();
         let mut registered = 0usize;
         let mut abc_run = 0usize;
+        let mut bound = 0usize;
         for frame in (0..num_frames).chain(std::iter::once(u16::MAX)) {
             let Some(eager_tags) = self.0.shared.get().take_eager_tags(frame) else {
                 continue;
@@ -377,20 +378,95 @@ impl<'gc> MovieClip<'gc> {
                 }
                 abc_run += 1;
             }
-            for (class_name, id) in eager_tags.symbolclass_names {
-                context
+            // Process SymbolClass entries in two ways:
+            //  1. Register each in pending_imported_symbols so the importer
+            //     can still do class-name lookup from its PlaceObject3 tags.
+            //  2. Bind the avm2_class on the character inside THIS SWF's
+            //     own library, the same way the normal frame-driven
+            //     SymbolClass handler does. Without step 2, when this SWF's
+            //     internal PlaceObject2 tags place child characters inside
+            //     its own nested timelines (e.g. FJ_MenuButton_Normal's
+            //     "Outline" child), those children instantiate as plain
+            //     flash.display.MovieClip and later fail AS3 type coercion.
+            if !eager_tags.symbolclass_names.is_empty() {
+                let names = eager_tags.symbolclass_names;
+                let mut activation = Avm2Activation::from_nothing(context);
+                let domain = activation
+                    .context
                     .library
-                    .avm2_class_registry_mut()
-                    .register_pending_imported_symbol(class_name, movie.clone(), id);
-                registered += 1;
+                    .library_for_movie_mut(movie.clone())
+                    .try_avm2_domain();
+
+                for (class_name, id) in names {
+                    // Step 1: always register pending.
+                    activation
+                        .context
+                        .library
+                        .avm2_class_registry_mut()
+                        .register_pending_imported_symbol(
+                            class_name.clone(),
+                            movie.clone(),
+                            id,
+                        );
+                    registered += 1;
+
+                    // Step 2: if the imported SWF has a domain (inherited
+                    // from importer by our loader patch), resolve the class
+                    // and bind it onto the character in this SWF's library.
+                    let Some(domain) = domain else { continue };
+                    let name = AvmString::new(activation.gc(), class_name);
+                    let class_object = match Avm2::lookup_class_for_character(
+                        &mut activation,
+                        self,
+                        domain,
+                        name,
+                        id,
+                    ) {
+                        Ok(c) => c,
+                        Err(_) => continue,
+                    };
+                    activation
+                        .context
+                        .library
+                        .avm2_class_registry_mut()
+                        .set_class_symbol(
+                            class_object.inner_class_definition(),
+                            movie.clone(),
+                            id,
+                        );
+                    let library = activation
+                        .context
+                        .library
+                        .library_for_movie_mut(movie.clone());
+                    match library.character_by_id(id) {
+                        Some(Character::EditText(et)) => {
+                            et.set_avm2_class(activation.gc(), class_object);
+                            bound += 1;
+                        }
+                        Some(Character::Graphic(g)) => {
+                            g.set_avm2_class(activation.gc(), class_object);
+                            bound += 1;
+                        }
+                        Some(Character::MovieClip(mc)) => {
+                            mc.set_avm2_class(activation.gc(), Some(class_object));
+                            bound += 1;
+                        }
+                        Some(Character::Avm2Button(btn)) => {
+                            btn.set_avm2_class(activation.gc(), class_object);
+                            bound += 1;
+                        }
+                        _ => {}
+                    }
+                }
             }
         }
         tracing::info!(
             "drain_symbol_class_for_import: {:?} ran {} ABC tags, \
-             registered {} pending SymbolClass entries",
+             registered {} pending SymbolClass entries, bound {} in local lib",
             movie.url(),
             abc_run,
-            registered
+            registered,
+            bound
         );
     }
 
