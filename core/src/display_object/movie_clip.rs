@@ -350,18 +350,33 @@ impl<'gc> MovieClip<'gc> {
         let movie = self.movie();
         let num_frames = self.header_frames();
         let mut registered = 0usize;
-        // Also drain 65535 explicitly: if load_asset_movie called
-        // set_cur_preload_frame(0), the very first SymbolClass tag
-        // encountered during preload stored itself at key
-        // (0u16 - 1) = 65535 via the cur_preload_frame - 1 computation
-        // in preload_symbol_class. Subsequent ShowFrames bump
-        // cur_preload_frame up to normal, so later tags land in their
-        // expected bucket, but that first frame's entries would be
-        // orphaned without this.
+        let mut abc_run = 0usize;
         for frame in (0..num_frames).chain(std::iter::once(u16::MAX)) {
             let Some(eager_tags) = self.0.shared.get().take_eager_tags(frame) else {
                 continue;
             };
+            // Run this frame's ABC tags so the imported SWF's class
+            // definitions land in our (inherited) domain. Without this,
+            // any class referenced by a skinHD sub-timeline (e.g.
+            // FJ_MainMenuButton_Norm, FJ_Label_Disabled,
+            // MainMenuButton_Outline) is not defined at PO3 resolve
+            // time and the button's internals can't construct.
+            for (tag_code, abc) in eager_tags.abc_tags {
+                let mut reader = abc.read_from(0);
+                let res = match tag_code {
+                    TagCode::DoAbc => self.do_abc(context, &mut reader),
+                    TagCode::DoAbc2 => self.do_abc_2(context, &mut reader),
+                    _ => continue,
+                };
+                if let Err(e) = res {
+                    tracing::warn!(
+                        "drain_symbol_class_for_import: {:?} ABC tag run failed: {:?}",
+                        movie.url(),
+                        e
+                    );
+                }
+                abc_run += 1;
+            }
             for (class_name, id) in eager_tags.symbolclass_names {
                 context
                     .library
@@ -371,8 +386,10 @@ impl<'gc> MovieClip<'gc> {
             }
         }
         tracing::info!(
-            "drain_symbol_class_for_import: {:?} registered {} pending SymbolClass entries",
+            "drain_symbol_class_for_import: {:?} ran {} ABC tags, \
+             registered {} pending SymbolClass entries",
             movie.url(),
+            abc_run,
             registered
         );
     }
