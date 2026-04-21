@@ -333,42 +333,44 @@ impl<'gc> LoadManager<'gc> {
                             let clip = MovieClip::new_import_assets(uc, movie, importer_movie);
 
                             clip.set_cur_preload_frame(0);
-                            let mut execution_limit = ExecutionLimit::none();
-
+                            uc.library.library_for_movie_mut(clip.movie());
                             tracing::debug!("Preloading swf to run exports {:?}", url);
 
-                            // Create library for exports before preloading
-                            uc.library.library_for_movie_mut(clip.movie());
-                            let res = clip.preload(uc, &mut execution_limit);
-                            tracing::debug!(
-                                "Preloaded swf to run exports result {:?} {}",
-                                url,
-                                res
-                            );
-
-                            // Imported SWFs never have their frames
-                            // executed, so their SymbolClass tags never
-                            // register via the normal run_abc_and_symbol_tags
-                            // path. Drain them into a pending map keyed by
-                            // class name so the importer's resolver can
-                            // pick them up once its own ABC has defined
-                            // the matching classes.
-                            clip.drain_symbol_class_for_import(uc);
+                            // Cascade preload up the import tree: pump
+                            // this clip's preload until it either yields
+                            // on a nested ImportAssets2 (that future
+                            // will resume us later) or fully preloads.
+                            // On full preload, drain SymbolClass into
+                            // the pending map and clear the importer's
+                            // awaiting_import, recursing up.
+                            try_settle_imports(uc, clip);
                         } else {
                             tracing::warn!(
                                 "Unsupported content type for ImportAssets: {:?}",
                                 content_type
                             );
+                            importer_movie.finish_importing();
+                            try_settle_imports(uc, importer_movie);
                         }
-
-                        importer_movie.finish_importing();
                     });
                     Ok(())
                 }
-                Err(e) => Err(Error::FetchError(format!(
-                    "Could not fetch: {:?} because {:?}",
-                    e.url, e.error
-                ))),
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to fetch imported SWF {:?}: {:?}",
+                        e.url,
+                        e.error
+                    );
+                    player.lock().unwrap().mutate_with_update_context(|uc| {
+                        let importer_movie = importer_movie.fetch(uc);
+                        importer_movie.finish_importing();
+                        try_settle_imports(uc, importer_movie);
+                    });
+                    Err(Error::FetchError(format!(
+                        "Could not fetch: {:?} because {:?}",
+                        e.url, e.error
+                    )))
+                }
             }
         })
     }
@@ -474,6 +476,32 @@ impl<'gc> LoadManager<'gc> {
 impl Default for LoadManager<'_> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Drive an ImportAssets2-loaded `MovieClip` as far as its preload can
+/// go, and cascade finish_importing up the import tree when it settles.
+///
+/// Nested imports (e.g. MainMenu -> skinHD -> skinHDGraphics) don't
+/// resume automatically: when the innermost load completes, its
+/// importer's `awaiting_import` flag is cleared but nothing calls
+/// preload on the importer to continue past the ImportAssets2 tag that
+/// yielded. Without this helper the importer's own SymbolClass tags
+/// are never parsed, so draining them into the pending registry
+/// finds nothing.
+fn try_settle_imports<'gc>(uc: &mut UpdateContext<'gc>, mut clip: MovieClip<'gc>) {
+    loop {
+        let mut limit = ExecutionLimit::none();
+        let done = clip.preload(uc, &mut limit);
+        if !done {
+            return;
+        }
+        clip.drain_symbol_class_for_import(uc);
+        let Some(parent) = clip.importer_movie() else {
+            return;
+        };
+        parent.finish_importing();
+        clip = parent;
     }
 }
 

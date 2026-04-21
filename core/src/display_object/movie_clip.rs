@@ -323,16 +323,26 @@ impl<'gc> MovieClip<'gc> {
         MovieClip(Gc::new(context.gc(), data))
     }
 
+    /// Return this clip's importer movie, if any. A root (player) movie
+    /// has no importer.
+    pub fn importer_movie(self) -> Option<MovieClip<'gc>> {
+        self.0.shared.get().importer_movie
+    }
+
     /// Drain SymbolClass entries from this clip's preloaded eager tags
     /// into the pending imported symbols registry, associating each
     /// class name with this clip's own movie. Used only by
     /// `load_asset_movie` to prime the lazy resolver for imported SWFs
-    /// that never have their frames executed. Unlike
-    /// `run_abc_and_symbol_tags` this deliberately does not try to run
-    /// the imported ABC tags; the importer already has its own copy of
-    /// the class definitions and we only need the name -> character id
-    /// mapping.
+    /// that never have their frames executed.
+    ///
+    /// Intentionally a no-op on the root movie: its SymbolClass tags
+    /// are owned by the normal frame-driven `run_abc_and_symbol_tags`
+    /// path, and stealing the entries here would break class/character
+    /// binding during frame 1.
     pub fn drain_symbol_class_for_import(self, context: &mut UpdateContext<'gc>) {
+        if self.importer_movie().is_none() {
+            return;
+        }
         let movie = self.movie();
         let num_frames = self.header_frames();
         for frame in 0..num_frames {
