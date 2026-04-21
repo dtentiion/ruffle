@@ -92,8 +92,24 @@ pub fn init<'gc>(
     this: Value<'gc>,
     args: &[Value<'gc>],
 ) -> Result<Value<'gc>, Error<'gc>> {
-    let this = this.as_object().unwrap();
-    let bitmap_data_obj = this.as_bitmap_data_object().unwrap();
+    let Some(this) = this.as_object() else {
+        tracing::warn!(
+            "BitmapData::init called with non-object this; skipping. \
+             args.len={}",
+            args.len()
+        );
+        return Ok(Value::Undefined);
+    };
+    let Some(bitmap_data_obj) = this.as_bitmap_data_object() else {
+        tracing::warn!(
+            "BitmapData::init: this is not a BitmapDataObject (class={:?}); \
+             skipping to avoid panic. This usually means a 4J-style SWF has a \
+             class whose inheritance chain includes BitmapData but the instance \
+             was allocated without BitmapData backing storage.",
+            this.instance_class().name()
+        );
+        return Ok(Value::Undefined);
+    };
 
     // We set the underlying BitmapData instance - we start out with a dummy BitmapData,
     // which makes custom classes see a disposed BitmapData before they call super()
