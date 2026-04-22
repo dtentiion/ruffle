@@ -2695,6 +2695,37 @@ impl Player {
                 sibling.set_matrix(m);
             }
 
+            // Diagnostic: dump the sibling movie's authored frame_size
+            // (top-left origin + dims) and the direct children of its
+            // root clip with their place_object matrices. Needed to
+            // figure out why tile1 renders at screen x=226 instead of
+            // x=0 - the 226 could come from the SWF header's origin,
+            // from the Panorama MC's authored placement inside
+            // Panorama1080, or from stage-level letterbox math.
+            let header_rect = &movie.header().stage_size();
+            tracing::info!(
+                "add_sibling_swf diag: url={:?} header_rect={{x={}, y={}, w={}, h={}}}",
+                movie.url(),
+                header_rect.x_min.to_pixels(),
+                header_rect.y_min.to_pixels(),
+                header_rect.width().to_pixels(),
+                header_rect.height().to_pixels(),
+            );
+            if let Some(container) = sibling.as_container() {
+                for child in container.iter_render_list() {
+                    let cname = child
+                        .name()
+                        .map(|n| n.to_string())
+                        .unwrap_or_default();
+                    let cm = child.base().matrix();
+                    tracing::info!(
+                        "add_sibling_swf diag: child name={:?} depth={} m.a={} m.d={} m.tx={} m.ty={}",
+                        cname, child.depth(), cm.a, cm.d,
+                        cm.tx.to_pixels(), cm.ty.to_pixels(),
+                    );
+                }
+            }
+
             format!(
                 "ok: url={:?} depth={} frames={} scale={}x{} t={},{}",
                 movie.url(),
