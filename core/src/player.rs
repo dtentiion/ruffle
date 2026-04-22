@@ -2513,6 +2513,98 @@ impl Player {
         });
     }
 
+    /// Instantiate an AS3 class (e.g. `Panorama`) that is bound via
+    /// SymbolClass to a library character in one of the loaded SWFs,
+    /// and attach the resulting DisplayObject as a direct child of the
+    /// root clip at the given depth.
+    ///
+    /// Used by the LCE-iOS host to add the menu panorama underneath the
+    /// already-loaded MainMenu buttons without modifying the MainMenu
+    /// SWF. Returns a human-readable status: `"ok: src=... chid=..."`
+    /// on success, or `"err: ..."` on failure.
+    pub fn instantiate_class_on_root(
+        &mut self,
+        class_name: &str,
+        depth: i32,
+    ) -> String {
+        use crate::avm2::Activation as Avm2Activation;
+        use crate::display_object::TDisplayObject;
+        use crate::string::AvmString;
+        self.mutate_with_update_context(|context| {
+            let Some(root) = context.stage.root_clip() else {
+                return String::from("err: no root clip");
+            };
+            let Some(root_mc) = root.as_movie_clip() else {
+                return String::from("err: root not a movie clip");
+            };
+            let movie = root.movie();
+            let Some(domain) = context
+                .library
+                .library_for_movie(movie.clone())
+                .and_then(|l| l.try_avm2_domain())
+            else {
+                return String::from("err: no avm2 domain on root movie");
+            };
+            let (src_movie, char_id) = {
+                let mut activation = Avm2Activation::from_nothing(context);
+                let name_avm = AvmString::new_utf8(activation.gc(), class_name);
+                let class_object = match domain
+                    .get_defined_value_handling_vector(&mut activation, name_avm)
+                {
+                    Ok(v) => match v.as_object().and_then(|o| o.as_class_object()) {
+                        Some(c) => c,
+                        None => {
+                            return format!("err: '{}' resolved but is not a class", class_name)
+                        }
+                    },
+                    Err(e) => {
+                        return format!("err: get_defined_value('{}') failed: {:?}", class_name, e)
+                    }
+                };
+                let class_def = class_object.inner_class_definition();
+                match activation
+                    .context
+                    .library
+                    .avm2_class_registry()
+                    .class_symbol(class_def)
+                {
+                    Some(pair) => pair,
+                    None => {
+                        return format!(
+                            "err: class '{}' has no SymbolClass binding",
+                            class_name
+                        )
+                    }
+                }
+            };
+            let library = context.library.library_for_movie_mut(src_movie.clone());
+            let Some(display_obj) = library.instantiate_by_id(char_id, context.gc_context) else {
+                return format!(
+                    "err: no character with chid {} in {:?}",
+                    char_id,
+                    src_movie.url()
+                );
+            };
+            root_mc.replace_at_depth(context, display_obj, depth);
+            display_obj.set_parent(context, Some(root));
+            display_obj.set_instantiated_by_timeline(true);
+            display_obj.set_depth(depth);
+            display_obj.post_instantiation(
+                context,
+                None,
+                crate::vminterface::Instantiator::Movie,
+                false,
+            );
+            display_obj.enter_frame(context);
+            format!(
+                "ok: src={:?} chid={} depth={}",
+                src_movie.url(),
+                char_id,
+                depth
+            )
+        })
+    }
+
     /// Replace the root movie on a live player. Used by the LCE-iOS host
     /// to perform scene transitions between menu SWFs (e.g. MainMenu ->
     /// HelpAndOptionsMenu) without tearing down the wgpu surface or the
