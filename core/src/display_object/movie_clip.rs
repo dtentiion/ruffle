@@ -4695,9 +4695,18 @@ impl<'gc, 'a> MovieClip<'gc> {
                 // XUI import scale: if this class was registered as an
                 // XUI bitmap with a non-unit Scale (skin_Minecraft.xui's
                 // `<Scale>` element - Panorama_Background_S/N carry
-                // Scale=5 so the 820x144 tile renders as 4100x720),
-                // multiply that into the placed child's matrix. Without
-                // this the authored tile positions leave visible gaps.
+                // Scale=5 so the 820x144 tile fills a 4100x720 slot),
+                // widen the placed Bitmap's display dimensions to match.
+                //
+                // Scaling via set_matrix does not survive: the Timeline
+                // in the Panorama MovieClip issues PlaceObject::Modify
+                // tags with updated Position matrices every frame, and
+                // apply_place_object replaces the child's matrix each
+                // time, wiping the scale. Changing the Bitmap's
+                // declared width/height instead widens self_bounds, and
+                // the GPU stretches the 820x144 texture across the
+                // authored 4100x720 slot at render time - persistent
+                // across any number of matrix overrides.
                 if let Some(class_name_swf) = place_object.class_name {
                     let movie = self.movie();
                     let encoding = swf::SwfStr::encoding_for_version(movie.version());
@@ -4709,14 +4718,24 @@ impl<'gc, 'a> MovieClip<'gc> {
                             || (entry.scale_y - 1.0).abs() > f32::EPSILON;
                         if need_scale {
                             if let Some(child) = self.child_by_depth(depth) {
-                                use ruffle_render::matrix::Matrix as RenderMatrix;
-                                let current = child.base().matrix();
-                                let scale_m = RenderMatrix::scale(entry.scale_x, entry.scale_y);
-                                child.set_matrix(current * scale_m);
-                                tracing::info!(
-                                    "xui_bitmap scale applied: class={} scale={}x{}",
-                                    decoded, entry.scale_x, entry.scale_y
-                                );
+                                if let Some(bitmap) = child.as_bitmap() {
+                                    let new_w = (bitmap.bitmap_width() as f32
+                                        * entry.scale_x)
+                                        .round() as u32;
+                                    let new_h = (bitmap.bitmap_height() as f32
+                                        * entry.scale_y)
+                                        .round() as u32;
+                                    bitmap.set_display_dimensions(new_w, new_h);
+                                    tracing::info!(
+                                        "xui_bitmap display dims set: class={} {}x{}",
+                                        decoded, new_w, new_h
+                                    );
+                                } else {
+                                    tracing::warn!(
+                                        "xui_bitmap scale: class={} placed child is not a Bitmap, skipping",
+                                        decoded
+                                    );
+                                }
                             }
                         }
                     }

@@ -209,6 +209,17 @@ impl<'gc> Bitmap<'gc> {
         self.0.height.get() as u16
     }
 
+    /// Override the display size of this Bitmap. The texture stored in
+    /// `bitmap_data` is unchanged; `self_bounds` widens to the new
+    /// dimensions and the GPU stretches the texture to fill. Used for
+    /// 4J XUI texture-import where the authored display slot is larger
+    /// than the imported PNG (Panorama_Background_S is an 820x144 PNG
+    /// whose XUI entry declares Scale=5, producing a 4100x720 slot).
+    pub fn set_display_dimensions(self, width: u32, height: u32) {
+        self.0.width.set(width);
+        self.0.height.set(height);
+    }
+
     pub fn pixel_snapping(self) -> PixelSnapping {
         self.0.pixel_snapping.get()
     }
