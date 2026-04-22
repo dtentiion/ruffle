@@ -2607,13 +2607,6 @@ impl Player {
                 Ok(m) => Arc::new(m),
                 Err(e) => return format!("err: parse swf: {:?}", e),
             };
-            let Some(root) = context.stage.root_clip() else {
-                return String::from("err: no root clip");
-            };
-            let Some(_root_mc) = root.as_movie_clip() else {
-                return String::from("err: root not a movie clip");
-            };
-
             // Register the new movie's library and bind it to the
             // stage domain so its ABC classes resolve against the same
             // domain as the root movie. This matches how console
@@ -2648,12 +2641,21 @@ impl Player {
             let sibling: DisplayObject<'_> = sibling_mc.into();
             sibling.set_is_root(false);
             sibling.set_depth(depth);
-            sibling.set_parent(context, Some(root));
             sibling.set_instantiated_by_timeline(true);
 
-            // Insert at depth on the existing root container.
-            if let Some(container) = root.as_container() {
-                container.replace_at_depth(context, sibling, depth);
+            // Attach to the STAGE (not to the root clip). Console's
+            // UIScene_MainMenu.cpp:29-30 adds Panorama / Logo /
+            // Tooltips to the PARENT LAYER - they persist across
+            // scene swaps rather than being tied to the scene root.
+            // In Ruffle terms, Stage.replace_root_movie only swaps
+            // the child at depth 0 (the root clip); children at
+            // other depths survive. So we attach siblings to the
+            // Stage directly at non-zero depths.
+            let stage_do: DisplayObject<'_> = context.stage.into();
+            sibling.set_parent(context, Some(stage_do));
+            {
+                use crate::display_object::TDisplayObjectContainer;
+                context.stage.replace_at_depth(context, sibling, depth);
             }
 
             sibling.post_instantiation(context, None, Instantiator::Movie, false);
