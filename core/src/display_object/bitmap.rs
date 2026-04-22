@@ -124,15 +124,17 @@ pub struct BitmapGraphicData<'gc> {
     id: CharacterId,
 
     /// Extra scale applied when rendering, used by 4J XUI texture
-    /// import. The texture stored in `bitmap_data` is the PNG at its
-    /// native size (e.g. 820x144 for Panorama_Background_S), but the
-    /// authored display slot is bigger (Scale=5 in skin_Minecraft.xui
-    /// -> 4100x720). Instead of fighting Timeline matrix overrides by
-    /// rewriting the child's matrix every frame, we push an extra
-    /// transform onto the render stack so the quad stretches to the
-    /// authored slot while the PlaceObject matrix still positions the
-    /// slot in the parent's coord space.
+    /// import. Only set when the authored PlaceObject matrix does not
+    /// already carry a display stretch; for panorama tiles the
+    /// generated SWF already has scale(5,5) baked into the matrix so
+    /// this stays None and the render path is unchanged.
     xui_scale: Cell<Option<(f32, f32)>>,
+
+    /// Marks this Bitmap as coming from the host's XUI texture-import
+    /// registry, independent of whether `xui_scale` triggers a render
+    /// push. Used by diagnostics that want to sample the tile matrix
+    /// over time to see if the Panorama scroll animation is running.
+    xui_origin: Cell<bool>,
 
     /// Whether or not bitmap smoothing is enabled.
     smoothing: Cell<bool>,
@@ -171,6 +173,7 @@ impl<'gc> Bitmap<'gc> {
                 width: Cell::new(width),
                 height: Cell::new(height),
                 xui_scale: Cell::new(None),
+                xui_origin: Cell::new(false),
                 smoothing: Cell::new(smoothing),
                 pixel_snapping: Cell::new(PixelSnapping::Auto),
                 avm2_object: Lock::new(None),
@@ -234,6 +237,12 @@ impl<'gc> Bitmap<'gc> {
     /// own matrix.
     pub fn set_xui_scale(self, scale_x: f32, scale_y: f32) {
         self.0.xui_scale.set(Some((scale_x, scale_y)));
+    }
+
+    /// Mark this Bitmap as a 4J XUI texture-import placement, so
+    /// diagnostics can find it later. Independent of `set_xui_scale`.
+    pub fn set_xui_origin(self, is_xui: bool) {
+        self.0.xui_origin.set(is_xui);
     }
 
     pub fn pixel_snapping(self) -> PixelSnapping {
@@ -426,6 +435,32 @@ impl<'gc> TDisplayObject<'gc> for Bitmap<'gc> {
         }
 
         let xui_scale = self.0.xui_scale.get();
+
+        // Diagnostic probe: sample the composed transform for bitmaps
+        // flagged as coming from the 4J XUI texture-import path every
+        // N render calls. Needed to tell whether the Panorama tile
+        // scroll animation is actually advancing at runtime vs. the
+        // tiles staying at their initial authored positions (tile1 at
+        // tx=0, tile2 at tx=6150, a 2050-px authored gap). Rate-limited
+        // via a process-global counter so we don't flood the log.
+        {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static RENDER_SAMPLE_COUNTER: AtomicU64 = AtomicU64::new(0);
+            if self.0.xui_origin.get() {
+                let n = RENDER_SAMPLE_COUNTER.fetch_add(1, Ordering::Relaxed);
+                if n % 600 == 0 {
+                    let composed = context.transform_stack.transform().matrix;
+                    let world = self.base().matrix();
+                    tracing::info!(
+                        "xui_bitmap tick sample #{}: chid={} world.tx={} world.a={} composed.tx={} composed.a={} composed.d={}",
+                        n, self.id(),
+                        world.tx.to_pixels(), world.a,
+                        composed.tx.to_pixels(), composed.a, composed.d,
+                    );
+                }
+            }
+        }
+
         if let Some((sx, sy)) = xui_scale {
             use ruffle_render::matrix::Matrix as RenderMatrix;
             use ruffle_render::transform::Transform as RenderTransform;

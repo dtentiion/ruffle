@@ -4716,6 +4716,7 @@ impl<'gc, 'a> MovieClip<'gc> {
                     {
                         if let Some(child) = self.child_by_depth(depth) {
                             if let Some(bitmap) = child.as_bitmap() {
+                                bitmap.set_xui_origin(true);
                                 let m = child.base().matrix();
                                 let place_has_scale = (m.a - 1.0).abs() > f32::EPSILON
                                     || (m.d - 1.0).abs() > f32::EPSILON;
