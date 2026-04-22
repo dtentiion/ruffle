@@ -1628,20 +1628,82 @@ impl<'gc> MovieClip<'gc> {
         }
     }
 
-    /// After the resolver transplants imported characters into this
-    /// clip's own library, the regular `instantiate_child` path works
-    /// for them: class is defined in our domain, character is in our
-    /// library under the same id. Keep the signature for callers
-    /// that already have a src_movie handy.
+    /// Like `instantiate_child` but the library lookup comes from
+    /// `src_movie` when it differs from `self.movie()`. The resolver
+    /// uses this path when class-only PlaceObject placements resolve to
+    /// a character in a foreign SWF whose chid collides with a
+    /// different character already registered at that id in the
+    /// importer's library (mirror would overwrite the wrong thing, so
+    /// we keep the character where it lives and look it up cross-movie).
     fn instantiate_child_from_movie(
         self,
         context: &mut UpdateContext<'gc>,
-        _src_movie: Arc<SwfMovie>,
+        src_movie: Arc<SwfMovie>,
         id: CharacterId,
         depth: Depth,
         place_object: &swf::PlaceObject,
     ) -> Option<DisplayObject<'gc>> {
-        self.instantiate_child(context, id, depth, place_object)
+        let self_movie = self.movie();
+        if Arc::ptr_eq(&src_movie, &self_movie) {
+            return self.instantiate_child(context, id, depth, place_object);
+        }
+        if self.has_child_at_depth(depth) {
+            context.avm_warning(&format!("Failed to place object at depth {depth}."));
+            return None;
+        }
+        let library = context.library.library_for_movie_mut(src_movie.clone());
+        match library.instantiate_by_id(id, context.gc_context) {
+            Some(child) => {
+                let prev_child = self.replace_at_depth(context, child, depth);
+                child.set_instantiated_by_timeline(true);
+                child.set_depth(depth);
+                child.set_parent(context, Some(self.into()));
+                child.set_place_frame(self.current_frame());
+                let has_object2_allocated = self.object2().is_none();
+                child.set_manual_frame_construct(has_object2_allocated);
+                child.apply_place_object(context, place_object);
+                if let Some(name) = &place_object.name {
+                    let encoding = swf::SwfStr::encoding_for_version(self.swf_version());
+                    let name = AvmString::new(context.gc(), name.decode(encoding));
+                    child.set_name(context.gc(), name);
+                    child.set_has_explicit_name(true);
+                }
+                if let Some(clip_depth) = place_object.clip_depth {
+                    child.set_clip_depth(clip_depth.into());
+                }
+                if let (Some(clip_actions), Some(clip)) =
+                    (&place_object.clip_actions, child.as_movie_clip())
+                {
+                    clip.init_clip_event_handlers(
+                        clip_actions
+                            .iter()
+                            .cloned()
+                            .map(|a| ClipEventHandler::from_action_and_movie(a, src_movie.clone()))
+                            .collect(),
+                    );
+                }
+                child.post_instantiation(context, None, Instantiator::Movie, false);
+                child.enter_frame(context);
+                if let Some(mc) = child.as_movie_clip()
+                    && !src_movie.is_action_script_3()
+                {
+                    mc.run_frame_avm1(context);
+                }
+                if let Some(prev_child) = prev_child {
+                    dispatch_removed_event(prev_child, context);
+                }
+                Some(child)
+            }
+            None => {
+                tracing::error!(
+                    "instantiate_child_from_movie: no character at {}#{} in {:?}",
+                    id,
+                    id,
+                    src_movie.url()
+                );
+                None
+            }
+        }
     }
 
     /// Instantiate a given child object on the timeline at a given depth.
@@ -4734,11 +4796,16 @@ impl<'gc, 'a> MovieClip<'gc> {
         if let Some((src_movie, char_id)) = entry {
             // With drain-time binding, this branch now fires for classes
             // defined in imported SWFs (the registry was populated during
-            // drain). But instantiate_child looks up by id in
-            // self.movie()'s library, so if src_movie != self.movie() we
-            // must mirror the character over. Otherwise the id resolves to
-            // nothing in the importer's library and the field wiring
-            // (e.g. MainMenu.Button1) ends up null.
+            // drain). If src_movie != self.movie() we try to mirror the
+            // character into the importer's library so instantiate_child
+            // finds it - but only when the importer's chid is free.
+            // Otherwise (chid collision: importer's own DefineSprite at
+            // the same id is a different character), we leave the
+            // character in its source library and let
+            // instantiate_child_from_movie look it up cross-movie.
+            // Previous behavior overwrote the colliding character's
+            // avm2_class, producing a tree stuffed with content from
+            // whatever the importer's sprite placed at that chid.
             if !Arc::ptr_eq(&src_movie, &movie) {
                 let src_char = activation
                     .context
@@ -4759,54 +4826,64 @@ impl<'gc, 'a> MovieClip<'gc> {
                             movie.url(),
                             decoded_log
                         );
-                    }
-                    // The avm2_class binding on this character in the
-                    // source library was already done during drain, but
-                    // the mirrored copy in the importer's library is a
-                    // fresh registration that needs the same binding so
-                    // construct_as_avm2_object picks up the real class.
-                    let dest_lib = activation
-                        .context
-                        .library
-                        .library_for_movie_mut(movie.clone());
-                    match dest_lib.character_by_id(char_id) {
-                        Some(Character::EditText(et)) => {
-                            et.set_avm2_class(activation.gc(), class_object);
-                        }
-                        Some(Character::Graphic(g)) => {
-                            g.set_avm2_class(activation.gc(), class_object);
-                        }
-                        Some(Character::MovieClip(mc)) => {
-                            mc.set_avm2_class(activation.gc(), Some(class_object));
-                        }
-                        Some(Character::Avm2Button(btn)) => {
-                            btn.set_avm2_class(activation.gc(), class_object);
-                        }
-                        Some(Character::Bitmap { .. }) => {
-                            // Bitmaps have a different binding API so that
-                            // AS3's BitmapData.init can distinguish whether
-                            // the declared class extends Bitmap or BitmapData.
-                            // Missing this leaves init with a None unwrap.
-                            if let Some(bitmap_class) = BitmapClass::from_class_object(
-                                class_object,
-                                activation.context,
-                            ) {
-                                let dest_lib = activation
-                                    .context
-                                    .library
-                                    .library_for_movie_mut(movie.clone());
-                                if let Some(Character::Bitmap(bitmap)) =
-                                    dest_lib.character_by_id(char_id)
-                                {
-                                    BitmapCharacter::set_avm2_class(
-                                        bitmap,
-                                        bitmap_class,
-                                        activation.gc(),
-                                    );
+                        // The avm2_class binding on this character in the
+                        // source library was already done during drain,
+                        // but the fresh registration in the importer's
+                        // library needs the same binding so
+                        // construct_as_avm2_object picks up the real
+                        // class.
+                        match dest_lib.character_by_id(char_id) {
+                            Some(Character::EditText(et)) => {
+                                et.set_avm2_class(activation.gc(), class_object);
+                            }
+                            Some(Character::Graphic(g)) => {
+                                g.set_avm2_class(activation.gc(), class_object);
+                            }
+                            Some(Character::MovieClip(mc)) => {
+                                mc.set_avm2_class(activation.gc(), Some(class_object));
+                            }
+                            Some(Character::Avm2Button(btn)) => {
+                                btn.set_avm2_class(activation.gc(), class_object);
+                            }
+                            Some(Character::Bitmap { .. }) => {
+                                if let Some(bitmap_class) = BitmapClass::from_class_object(
+                                    class_object,
+                                    activation.context,
+                                ) {
+                                    let dest_lib = activation
+                                        .context
+                                        .library
+                                        .library_for_movie_mut(movie.clone());
+                                    if let Some(Character::Bitmap(bitmap)) =
+                                        dest_lib.character_by_id(char_id)
+                                    {
+                                        BitmapCharacter::set_avm2_class(
+                                            bitmap,
+                                            bitmap_class,
+                                            activation.gc(),
+                                        );
+                                    }
                                 }
                             }
+                            _ => {}
                         }
-                        _ => {}
+                        tracing::info!(
+                            "resolve_place_by_class_name: OK {} -> char_id={}",
+                            decoded_log,
+                            char_id
+                        );
+                        return Some((movie, char_id));
+                    } else {
+                        // Collision: keep character in src_movie's library
+                        // and let the caller instantiate cross-movie.
+                        tracing::info!(
+                            "resolve_place_by_class_name: chid {} already present in {:?} for class {}; returning src {:?}",
+                            char_id,
+                            movie.url(),
+                            decoded_log,
+                            src_movie.url()
+                        );
+                        return Some((src_movie, char_id));
                     }
                 } else {
                     tracing::warn!(
@@ -4816,6 +4893,7 @@ impl<'gc, 'a> MovieClip<'gc> {
                         src_movie.url(),
                         char_id
                     );
+                    return None;
                 }
             }
             tracing::info!(
@@ -4823,9 +4901,6 @@ impl<'gc, 'a> MovieClip<'gc> {
                 decoded_log,
                 char_id
             );
-            // Return the importer's movie so instantiate_child_from_movie
-            // (which delegates to instantiate_child using self.movie()'s
-            // library) finds the character we just mirrored.
             return Some((movie, char_id));
         }
 
