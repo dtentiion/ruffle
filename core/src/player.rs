@@ -2513,6 +2513,72 @@ impl Player {
         });
     }
 
+    /// Register an externally-sourced PNG as a library Bitmap character
+    /// keyed by an AS3 class name. Used to port 4J's Iggy XUI texture
+    /// import mechanism: on console, `skin_Minecraft.xui` maps class
+    /// names like `Panorama_Background_S` to PNG paths, and Iggy loads
+    /// them at runtime as bitmap characters bound to those classes.
+    /// Our iOS host does the same mapping and calls this per entry.
+    ///
+    /// Lookup is picked up by a fallback branch in
+    /// `resolve_place_by_class_name` (movie_clip.rs) when AVM2 class
+    /// resolution fails. That means the returned character displays as
+    /// a regular `flash.display.Bitmap`, NOT an instance of the named
+    /// class. Fine for the Panorama / logo use case where the SWF only
+    /// cares about the visual; any `is ClassName` check in AS3 would
+    /// fail, but LCE's assets don't do such checks on these slots.
+    pub fn register_xui_bitmap(
+        &mut self,
+        class_name: &str,
+        png_bytes: Vec<u8>,
+    ) -> Result<u16, String> {
+        use crate::character::{BitmapCharacter, Character, CompressedBitmap};
+        use gc_arena::Gc;
+        let (width, height) =
+            ruffle_render::utils::decode_define_bits_jpeg_dimensions(&png_bytes)
+                .map_err(|e| format!("decode dims: {:?}", e))?;
+        self.mutate_with_update_context(|context| {
+            // One synthetic SwfMovie backs all XUI bitmaps so they
+            // share a library. Lazy-create it on first registration.
+            let movie = crate::tag_utils::xui_synthetic_movie();
+            // Ensure library exists (auto-created by library_for_movie_mut).
+            let _ = context.library.library_for_movie_mut(movie.clone());
+
+            // Pick an unused chid. Start at 1 and scan upwards - the
+            // synthetic library is ours and small, so linear is fine.
+            let chid = {
+                let lib = context.library.library_for_movie_mut(movie.clone());
+                let mut c: u16 = 1;
+                while lib.character_by_id(c).is_some() {
+                    c = c.checked_add(1).ok_or_else(|| String::from("xui: out of character ids"))?;
+                }
+                c
+            };
+
+            let bitmap = Character::Bitmap(Gc::new(
+                context.gc(),
+                BitmapCharacter::new(CompressedBitmap::Jpeg {
+                    data: png_bytes,
+                    alpha: None,
+                    width,
+                    height,
+                }),
+            ));
+            context
+                .library
+                .library_for_movie_mut(movie.clone())
+                .register_character(chid, bitmap);
+
+            crate::tag_utils::xui_bitmap_register(class_name.to_string(), movie, chid);
+
+            tracing::info!(
+                "register_xui_bitmap: '{}' -> chid={} ({}x{})",
+                class_name, chid, width, height
+            );
+            Ok(chid)
+        })
+    }
+
     /// Load a sibling SWF (Panorama1080.swf, ComponentLogo1080.swf etc.)
     /// from bytes and attach its root timeline as a direct child of the
     /// current root clip at the given depth. Mirrors how the console

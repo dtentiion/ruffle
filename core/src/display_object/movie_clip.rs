@@ -4778,6 +4778,24 @@ impl<'gc, 'a> MovieClip<'gc> {
                 }
             },
             Err(e) => {
+                // XUI bitmap fallback: on console LCE, many PlaceObject3
+                // class names (Panorama_Background_S, logo art, splash
+                // text art) resolve to external PNGs through Iggy's
+                // skin_Minecraft.xui table, not through an AS3 class.
+                // The host registers those PNGs as synthetic Bitmap
+                // characters keyed by name via Player::register_xui_bitmap;
+                // check that registry before giving up.
+                if let Some((xui_movie, xui_chid)) =
+                    crate::tag_utils::xui_bitmap_lookup(&decoded_log)
+                {
+                    tracing::info!(
+                        "resolve_place_by_class_name: XUI bitmap fallback {} -> {:?}#{}",
+                        decoded_log,
+                        xui_movie.url(),
+                        xui_chid
+                    );
+                    return Some((xui_movie, xui_chid));
+                }
                 tracing::warn!(
                     "resolve_place_by_class_name: get_defined_value failed for {}: {:?}",
                     decoded_log,

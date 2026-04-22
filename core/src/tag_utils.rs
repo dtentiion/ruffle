@@ -4,6 +4,7 @@ use swf::{CharacterId, TagCode};
 use thiserror::Error;
 
 pub use ruffle_common::tag_utils::{SwfMovie, SwfSlice, SwfStream};
+pub use ruffle_common::tag_utils::{xui_bitmap_lookup, xui_bitmap_register, xui_synthetic_movie};
 
 #[derive(Error, Debug)]
 pub enum Error {

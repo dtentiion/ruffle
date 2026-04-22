@@ -496,3 +496,49 @@ impl SwfSlice {
         self.end - self.start
     }
 }
+
+// ============================================================================
+// XUI bitmap registry (4J Iggy texture-import parity)
+// ============================================================================
+//
+// Console LCE maps AS3 class names like `Panorama_Background_S` to external
+// PNG files via `skin_Minecraft.xui`. When a SWF PlaceObject3 references one
+// of those class names, Iggy loads the PNG and binds it as a Bitmap
+// character at runtime. Ruffle has no native equivalent, so we keep a
+// process-global registry of (class_name -> (synthetic_movie, char_id))
+// populated from the host side (see Player::register_xui_bitmap).
+//
+// `resolve_place_by_class_name` consults this registry as a fallback when
+// AVM2 class resolution fails for an unknown name.
+
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
+static XUI_SYNTHETIC_MOVIE: OnceLock<Arc<SwfMovie>> = OnceLock::new();
+static XUI_BITMAPS: OnceLock<Mutex<HashMap<String, (Arc<SwfMovie>, u16)>>> = OnceLock::new();
+
+/// Lazy-init and return the single SwfMovie used to back all XUI bitmap
+/// characters. Using one shared movie means the library lookup in
+/// instantiate_child_from_movie always finds our bitmaps.
+pub fn xui_synthetic_movie() -> Arc<SwfMovie> {
+    XUI_SYNTHETIC_MOVIE
+        .get_or_init(|| Arc::new(SwfMovie::empty(9, Some("xui:synthetic".into()))))
+        .clone()
+}
+
+/// Register a class-name -> (movie, chid) mapping. Called from the
+/// Player::register_xui_bitmap path after the bitmap has been added to
+/// the synthetic library.
+pub fn xui_bitmap_register(class_name: String, movie: Arc<SwfMovie>, char_id: u16) {
+    let map = XUI_BITMAPS.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(mut guard) = map.lock() {
+        guard.insert(class_name, (movie, char_id));
+    }
+}
+
+/// Look up a class-name mapping. Returns None if unregistered. Used by
+/// the resolver fallback in movie_clip.rs.
+pub fn xui_bitmap_lookup(class_name: &str) -> Option<(Arc<SwfMovie>, u16)> {
+    let map = XUI_BITMAPS.get()?;
+    map.lock().ok()?.get(class_name).cloned()
+}
