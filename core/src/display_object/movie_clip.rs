@@ -4727,9 +4727,12 @@ impl<'gc, 'a> MovieClip<'gc> {
                                         .round() as u32;
                                     bitmap.set_display_dimensions(new_w, new_h);
                                     bitmap.set_xui_scale(entry.scale_x, entry.scale_y);
+                                    let m = child.base().matrix();
                                     tracing::info!(
-                                        "xui_bitmap scale set: class={} dims={}x{} xui_scale={}x{}",
-                                        decoded, new_w, new_h, entry.scale_x, entry.scale_y
+                                        "xui_bitmap scale set: class={} depth={} dims={}x{} xui_scale={}x{} placeM a={} b={} c={} d={} tx={} ty={}",
+                                        decoded, depth, new_w, new_h, entry.scale_x, entry.scale_y,
+                                        m.a, m.b, m.c, m.d,
+                                        m.tx.to_pixels(), m.ty.to_pixels()
                                     );
                                 } else {
                                     tracing::warn!(
