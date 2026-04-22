@@ -2682,11 +2682,13 @@ impl Player {
             let label_avm = AvmString::new_utf8(activation.gc(), label);
             let two_args = [Avm2Value::String(label_avm), Avm2Value::Number(id)];
             let one_arg = [Avm2Value::String(label_avm)];
-            // LCE's FJ_Button exposes Init(label, id) but SetLabel(label);
-            // pick the arity that matches the callee so we don't trip
-            // ArgumentError #1063.
+            let int_arg = [Avm2Value::Integer(id as i32)];
+            // LCE's FJ_Button exposes Init(label, id), SetLabel(label),
+            // and ChangeState(stateInt); pick the arg shape per method
+            // so we don't trip ArgumentError #1063.
             let args: &[Avm2Value] = match method_name {
                 "SetLabel" => &one_arg,
+                "ChangeState" | "EnableButton" => &int_arg,
                 _ => &two_args,
             };
             match Avm2Value::from(obj).call_property(
