@@ -2562,13 +2562,24 @@ impl Player {
             // as Player::set_root_movie, but with is_root=false so it
             // renders as a child instead of owning the stage.
             let mut activation = Avm2Activation::from_domain(context, stage_domain);
-            let sibling: DisplayObject<'_> =
-                crate::display_object::MovieClip::player_root_movie(&mut activation, movie.clone())
-                    .into();
+            let sibling_mc =
+                crate::display_object::MovieClip::player_root_movie(&mut activation, movie.clone());
             drop(activation);
+
+            // Drain the sibling's tags: this runs its DoABC2 (defining
+            // classes like fourj.documents.Panorama in the shared
+            // domain), processes its SymbolClass entries (binding
+            // character ids to class defs), and reads all character
+            // definitions into its library. Required here because the
+            // normal frame-pump preload traversal is driven by the
+            // root clip, and a sibling attached from the host side
+            // won't be walked by it until it's visible - catch-22
+            // we break by draining explicitly up-front.
+            sibling_mc.preload(context, &mut crate::limits::ExecutionLimit::none());
 
             // player_root_movie flags the clip as is_root; unset so the
             // sibling behaves like a regular child, not the stage root.
+            let sibling: DisplayObject<'_> = sibling_mc.into();
             sibling.set_is_root(false);
             sibling.set_depth(depth);
             sibling.set_parent(context, Some(root));
