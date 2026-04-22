@@ -469,7 +469,7 @@ impl<'gc> TDisplayObject<'gc> for Bitmap<'gc> {
         if self.0.xui_origin.get() {
             let n = self.0.xui_render_tick.get();
             self.0.xui_render_tick.set(n + 1);
-            if n % 150 == 0 {
+            if n == 0 || n % 150 == 0 {
                 let composed = context.transform_stack.transform().matrix;
                 let world = self.base().matrix();
                 let ptr = Gc::as_ptr(self.0) as usize;
@@ -479,6 +479,27 @@ impl<'gc> TDisplayObject<'gc> for Bitmap<'gc> {
                     world.tx.to_pixels(), world.a,
                     composed.tx.to_pixels(), composed.d,
                 );
+                // Walk the parent chain once at tick 0 so the host can
+                // see each ancestor's matrix and pinpoint where a screen
+                // offset is coming from. Only dumped once per Bitmap.
+                if n == 0 {
+                    let mut level = 0;
+                    let mut cur = self.parent();
+                    while let Some(p) = cur {
+                        let pm = p.base().matrix();
+                        let pname = p.name().map(|n| n.to_string()).unwrap_or_default();
+                        tracing::info!(
+                            "xui_bitmap parent chain L{}: ptr={:x} name={:?} m.a={} m.d={} m.tx={} m.ty={}",
+                            level,
+                            Gc::as_ptr(self.0) as usize,
+                            pname, pm.a, pm.d,
+                            pm.tx.to_pixels(), pm.ty.to_pixels(),
+                        );
+                        level += 1;
+                        if level > 8 { break; }
+                        cur = p.parent();
+                    }
+                }
             }
         }
 
