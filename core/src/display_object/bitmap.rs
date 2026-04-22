@@ -123,6 +123,17 @@ pub struct BitmapGraphicData<'gc> {
 
     id: CharacterId,
 
+    /// Extra scale applied when rendering, used by 4J XUI texture
+    /// import. The texture stored in `bitmap_data` is the PNG at its
+    /// native size (e.g. 820x144 for Panorama_Background_S), but the
+    /// authored display slot is bigger (Scale=5 in skin_Minecraft.xui
+    /// -> 4100x720). Instead of fighting Timeline matrix overrides by
+    /// rewriting the child's matrix every frame, we push an extra
+    /// transform onto the render stack so the quad stretches to the
+    /// authored slot while the PlaceObject matrix still positions the
+    /// slot in the parent's coord space.
+    xui_scale: Cell<Option<(f32, f32)>>,
+
     /// Whether or not bitmap smoothing is enabled.
     smoothing: Cell<bool>,
 
@@ -159,6 +170,7 @@ impl<'gc> Bitmap<'gc> {
                 bitmap_data: Lock::new(bitmap_data),
                 width: Cell::new(width),
                 height: Cell::new(height),
+                xui_scale: Cell::new(None),
                 smoothing: Cell::new(smoothing),
                 pixel_snapping: Cell::new(PixelSnapping::Auto),
                 avm2_object: Lock::new(None),
@@ -211,13 +223,17 @@ impl<'gc> Bitmap<'gc> {
 
     /// Override the display size of this Bitmap. The texture stored in
     /// `bitmap_data` is unchanged; `self_bounds` widens to the new
-    /// dimensions and the GPU stretches the texture to fill. Used for
-    /// 4J XUI texture-import where the authored display slot is larger
-    /// than the imported PNG (Panorama_Background_S is an 820x144 PNG
-    /// whose XUI entry declares Scale=5, producing a 4100x720 slot).
+    /// dimensions so culling stays accurate.
     pub fn set_display_dimensions(self, width: u32, height: u32) {
         self.0.width.set(width);
         self.0.height.set(height);
+    }
+
+    /// Extra scale to apply when rendering. See the field doc on
+    /// `xui_scale` for why this is separate from the display object's
+    /// own matrix.
+    pub fn set_xui_scale(self, scale_x: f32, scale_y: f32) {
+        self.0.xui_scale.set(Some((scale_x, scale_y)));
     }
 
     pub fn pixel_snapping(self) -> PixelSnapping {
@@ -409,11 +425,26 @@ impl<'gc> TDisplayObject<'gc> for Bitmap<'gc> {
             return;
         }
 
+        let xui_scale = self.0.xui_scale.get();
+        if let Some((sx, sy)) = xui_scale {
+            use ruffle_render::matrix::Matrix as RenderMatrix;
+            use ruffle_render::transform::Transform as RenderTransform;
+            context.transform_stack.push(&RenderTransform {
+                matrix: RenderMatrix::scale(sx, sy),
+                color_transform: Default::default(),
+                perspective_projection: None,
+            });
+        }
+
         self.0.bitmap_data.get().render(
             self.0.smoothing.get(),
             context,
             self.0.pixel_snapping.get(),
         );
+
+        if xui_scale.is_some() {
+            context.transform_stack.pop();
+        }
     }
 
     fn object1(self) -> Option<crate::avm1::Object<'gc>> {
