@@ -2496,7 +2496,20 @@ pub trait TDisplayObject<'gc>:
         // PlaceObject tags only apply if this object has not been dynamically moved by AS code.
         if !self.transformed_by_script() {
             if let Some(matrix) = place_object.matrix {
-                self.set_matrix(matrix.into());
+                // 4J XUI tile correction: the Panorama second tile is
+                // authored with a tx that leaves a 2050-px gap to the
+                // first tile. We set xui_tx_offset at placement time
+                // so subsequent Timeline Modify tags have their tx
+                // shifted back by the same amount, preserving the
+                // per-frame scroll delta while closing the gap. See
+                // bitmap.rs `xui_tx_offset` field doc.
+                let mut m: Matrix = matrix.into();
+                if let Some(bitmap) = self.as_bitmap() {
+                    if let Some(offset) = bitmap.xui_tx_offset() {
+                        m.tx = Twips::from_pixels(m.tx.to_pixels() - offset as f64);
+                    }
+                }
+                self.set_matrix(m);
                 if let Some(parent) = self.parent() {
                     // Self-transform changes are automatically handled,
                     // we only want to inform ancestors to avoid unnecessary invalidations for tx/ty

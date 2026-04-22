@@ -4732,12 +4732,40 @@ impl<'gc, 'a> MovieClip<'gc> {
                                     bitmap.set_display_dimensions(new_w, new_h);
                                     bitmap.set_xui_scale(entry.scale_x, entry.scale_y);
                                 }
+                                // Tile gap-closure: on LCE panoramas the
+                                // second tile is authored at tx=6150
+                                // when the tile width is 4100 - a 2050-px
+                                // authored gap that the scroll animation
+                                // doesn't close (both tiles advance at
+                                // the same rate). Detect the situation
+                                // by comparing the initial tx to the
+                                // tile's rendered width; if tx exceeds
+                                // that width, stash the excess so every
+                                // subsequent apply_place_object subtracts
+                                // it, keeping the tile adjacent to tile1.
+                                let tile_width_px = bitmap.bitmap_width() as f32
+                                    * m.a.abs()
+                                    * entry.scale_x.max(1.0);
+                                let tx_px = m.tx.to_pixels() as f32;
+                                let mut closure_offset: f32 = 0.0;
+                                if tile_width_px > f32::EPSILON
+                                    && tx_px > tile_width_px + f32::EPSILON
+                                {
+                                    closure_offset = tx_px - tile_width_px;
+                                    bitmap.set_xui_tx_offset(Some(closure_offset));
+                                    let mut adjusted = m;
+                                    adjusted.tx = swf::Twips::from_pixels(
+                                        (tx_px - closure_offset) as f64,
+                                    );
+                                    child.set_matrix(adjusted);
+                                }
                                 tracing::info!(
-                                    "xui_bitmap placed: class={} depth={} tex={}x{} xui_scale={}x{} applied={} placeM a={} b={} c={} d={} tx={} ty={}",
+                                    "xui_bitmap placed: class={} depth={} tex={}x{} xui_scale={}x{} applied={} tile_w={} closure_offset={} placeM a={} b={} c={} d={} tx={} ty={}",
                                     decoded, depth,
                                     bitmap.bitmap_width(), bitmap.bitmap_height(),
                                     entry.scale_x, entry.scale_y,
                                     need_scale && !place_has_scale,
+                                    tile_width_px, closure_offset,
                                     m.a, m.b, m.c, m.d,
                                     m.tx.to_pixels(), m.ty.to_pixels()
                                 );

@@ -141,6 +141,18 @@ pub struct BitmapGraphicData<'gc> {
     /// renders first in the frame, so we keep one here instead.
     xui_render_tick: Cell<u64>,
 
+    /// Authored-tx correction for 4J XUI-placed tiles whose initial
+    /// PlaceObject tx sits past one tile width, producing a static
+    /// gap that the scroll animation never closes. E.g. the
+    /// Panorama_Background_S second tile is authored at tx=6150 with
+    /// a 4100-px tile width, so the gap is 2050; both tiles scroll
+    /// at the same rate so the gap is perpetual. Setting this offset
+    /// makes apply_place_object subtract it from the incoming matrix
+    /// tx on every Timeline Modify, locking the tile to its intended
+    /// adjacent-tile-width position while still letting the scroll
+    /// animation drift it left each frame.
+    xui_tx_offset: Cell<Option<f32>>,
+
     /// Whether or not bitmap smoothing is enabled.
     smoothing: Cell<bool>,
 
@@ -180,6 +192,7 @@ impl<'gc> Bitmap<'gc> {
                 xui_scale: Cell::new(None),
                 xui_origin: Cell::new(false),
                 xui_render_tick: Cell::new(0),
+                xui_tx_offset: Cell::new(None),
                 smoothing: Cell::new(smoothing),
                 pixel_snapping: Cell::new(PixelSnapping::Auto),
                 avm2_object: Lock::new(None),
@@ -249,6 +262,19 @@ impl<'gc> Bitmap<'gc> {
     /// diagnostics can find it later. Independent of `set_xui_scale`.
     pub fn set_xui_origin(self, is_xui: bool) {
         self.0.xui_origin.set(is_xui);
+    }
+
+    /// Set the authored-tx correction (see `xui_tx_offset` field
+    /// doc). `None` means no correction; `Some(px)` subtracts `px`
+    /// from every incoming PlaceObject matrix tx in
+    /// apply_place_object.
+    pub fn set_xui_tx_offset(self, offset: Option<f32>) {
+        self.0.xui_tx_offset.set(offset);
+    }
+
+    /// Read the authored-tx correction. None means no correction.
+    pub fn xui_tx_offset(self) -> Option<f32> {
+        self.0.xui_tx_offset.get()
     }
 
     pub fn pixel_snapping(self) -> PixelSnapping {
