@@ -2513,6 +2513,23 @@ impl Player {
         });
     }
 
+    /// Replace the root movie on a live player. Used by the LCE-iOS host
+    /// to perform scene transitions between menu SWFs (e.g. MainMenu ->
+    /// HelpAndOptionsMenu) without tearing down the wgpu surface or the
+    /// display-link pump. Any ExternalInterface registrations, timers,
+    /// and stage state get cleared as part of `replace_root_movie`.
+    pub fn replace_root_movie_from_bytes(
+        &mut self,
+        data: Vec<u8>,
+        url: String,
+    ) -> Result<(), String> {
+        let movie = SwfMovie::from_data(&data, url, None).map_err(|e| e.to_string())?;
+        self.mutate_with_update_context(|context| {
+            context.replace_root_movie(movie);
+        });
+        Ok(())
+    }
+
     /// List every direct child of the stage's root clip. Each entry is
     /// `(instance_name, class_name)`. Instance names come from the SWF's
     /// PlaceObject tags; unnamed children appear with an empty string.
