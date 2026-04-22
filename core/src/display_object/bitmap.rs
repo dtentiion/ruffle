@@ -153,6 +153,13 @@ pub struct BitmapGraphicData<'gc> {
     /// animation drift it left each frame.
     xui_tx_offset: Cell<Option<f32>>,
 
+    /// Snapshot slot for Player::tick_preserving_xui. Before a
+    /// headless scene-transition tick burst, the host stashes this
+    /// bitmap's current matrix here; after the burst it restores the
+    /// matrix from this slot so the panorama scroll doesn't visibly
+    /// jump during the transition.
+    xui_saved_matrix: Cell<Option<ruffle_render::matrix::Matrix>>,
+
     /// Whether or not bitmap smoothing is enabled.
     smoothing: Cell<bool>,
 
@@ -193,6 +200,7 @@ impl<'gc> Bitmap<'gc> {
                 xui_origin: Cell::new(false),
                 xui_render_tick: Cell::new(0),
                 xui_tx_offset: Cell::new(None),
+                xui_saved_matrix: Cell::new(None),
                 smoothing: Cell::new(smoothing),
                 pixel_snapping: Cell::new(PixelSnapping::Auto),
                 avm2_object: Lock::new(None),
@@ -275,6 +283,24 @@ impl<'gc> Bitmap<'gc> {
     /// Read the authored-tx correction. None means no correction.
     pub fn xui_tx_offset(self) -> Option<f32> {
         self.0.xui_tx_offset.get()
+    }
+
+    /// True if this Bitmap came from the host's XUI texture-import
+    /// registry, used by tick_preserving_xui to find the right
+    /// subset of bitmaps to snapshot/restore around a headless burst.
+    pub fn is_xui_origin(self) -> bool {
+        self.0.xui_origin.get()
+    }
+
+    /// Store/clear the snapshot matrix slot. See `xui_saved_matrix`
+    /// field doc.
+    pub fn set_saved_matrix(self, m: Option<ruffle_render::matrix::Matrix>) {
+        self.0.xui_saved_matrix.set(m);
+    }
+
+    /// Read the snapshot matrix slot.
+    pub fn saved_matrix(self) -> Option<ruffle_render::matrix::Matrix> {
+        self.0.xui_saved_matrix.get()
     }
 
     pub fn pixel_snapping(self) -> PixelSnapping {

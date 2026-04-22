@@ -2903,10 +2903,64 @@ impl Player {
         })
     }
 
+    /// Advance the Player one headless tick while freezing the matrices
+    /// of every XUI-origin Bitmap. Used for LCE-iOS scene transitions:
+    /// the host runs 30 headless ticks after replace_root_movie so the
+    /// new scene's init chain can settle (labels, button wiring), but
+    /// during those ticks the panorama scroll animation would advance
+    /// ~22 authored px, producing a visible leftward jump when the
+    /// surface resumes rendering. Snapshot-tick-restore keeps the
+    /// panorama, logo, and tooltips at the same position across the
+    /// transition while everything else still advances normally.
+    pub fn tick_preserving_xui(&mut self, dt: ruffle_common::duration::FloatDuration) {
+        use crate::display_object::{DisplayObject, TDisplayObject, TDisplayObjectContainer};
+
+        fn walk_stash<'gc>(dobj: DisplayObject<'gc>) {
+            if let Some(bitmap) = dobj.as_bitmap() {
+                if bitmap.is_xui_origin() {
+                    bitmap.set_saved_matrix(Some(bitmap.base().matrix()));
+                }
+            }
+            if let Some(container) = dobj.as_container() {
+                for child in container.iter_render_list() {
+                    walk_stash(child);
+                }
+            }
+        }
+
+        fn walk_restore<'gc>(dobj: DisplayObject<'gc>) {
+            if let Some(bitmap) = dobj.as_bitmap() {
+                if bitmap.is_xui_origin() {
+                    if let Some(m) = bitmap.saved_matrix() {
+                        bitmap.set_matrix(m);
+                        bitmap.set_saved_matrix(None);
+                    }
+                }
+            }
+            if let Some(container) = dobj.as_container() {
+                for child in container.iter_render_list() {
+                    walk_restore(child);
+                }
+            }
+        }
+
+        self.mutate_with_update_context(|context| {
+            let stage: DisplayObject<'_> = context.stage.into();
+            walk_stash(stage);
+        });
+
+        self.tick(dt);
+
+        self.mutate_with_update_context(|context| {
+            let stage: DisplayObject<'_> = context.stage.into();
+            walk_restore(stage);
+        });
+    }
+
     /// Like `enumerate_root_children`, but one level deeper: returns the
     /// direct children of the named child. Used by the iOS host to verify
     /// whether e.g. `Button1` actually has its timeline-placed
-    /// `FJ_TextContainer` subclip - when PlaceObject places an instance by
+    /// `FJ_TextContainer` subclip when PlaceObject places an instance by
     /// class name only (no char id), the class's SymbolClass binding has to
     /// be consulted to clone the bound sprite's timeline into the instance.
     pub fn enumerate_named_child_children(
