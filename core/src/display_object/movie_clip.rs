@@ -4692,21 +4692,21 @@ impl<'gc, 'a> MovieClip<'gc> {
                     &place_object,
                 );
 
-                // XUI import scale: if this class was registered as an
-                // XUI bitmap with a non-unit Scale (skin_Minecraft.xui's
-                // `<Scale>` element - Panorama_Background_S/N carry
-                // Scale=5 so the 820x144 tile fills a 4100x720 slot),
-                // widen the placed Bitmap's display dimensions to match.
-                //
-                // Scaling via set_matrix does not survive: the Timeline
-                // in the Panorama MovieClip issues PlaceObject::Modify
-                // tags with updated Position matrices every frame, and
-                // apply_place_object replaces the child's matrix each
-                // time, wiping the scale. Changing the Bitmap's
-                // declared width/height instead widens self_bounds, and
-                // the GPU stretches the 820x144 texture across the
-                // authored 4100x720 slot at render time - persistent
-                // across any number of matrix overrides.
+                // Note: skin_Minecraft.xui's `<Scale>` element for
+                // Panorama_Background_S/N is already baked into the SWF
+                // PlaceObject matrix (a=5, d=5 at the authored tile
+                // depths - confirmed on fb4ebdfe). Applying our own
+                // render-time xui_scale stacked another 5x on top and
+                // rendered the tile at 25x, which the host read as
+                // "zoomed in, only top visible". Keep the entry around
+                // for any future import that genuinely does need a
+                // host-side stretch, but do NOT push it when the
+                // authored matrix is already non-identity; the SWF has
+                // the scale and re-applying it is a double-counting
+                // bug. tx=6150 on tile2 is an authored 2050-px gap
+                // between tile1 end (x=4100) and tile2 start (x=6150)
+                // that the Panorama AS3 class closes at runtime, not
+                // something the placement needs to hide.
                 if let Some(class_name_swf) = place_object.class_name {
                     let movie = self.movie();
                     let encoding = swf::SwfStr::encoding_for_version(movie.version());
@@ -4714,11 +4714,14 @@ impl<'gc, 'a> MovieClip<'gc> {
                     if let Some(entry) =
                         crate::tag_utils::xui_bitmap_lookup(decoded.as_ref())
                     {
-                        let need_scale = (entry.scale_x - 1.0).abs() > f32::EPSILON
-                            || (entry.scale_y - 1.0).abs() > f32::EPSILON;
-                        if need_scale {
-                            if let Some(child) = self.child_by_depth(depth) {
-                                if let Some(bitmap) = child.as_bitmap() {
+                        if let Some(child) = self.child_by_depth(depth) {
+                            if let Some(bitmap) = child.as_bitmap() {
+                                let m = child.base().matrix();
+                                let place_has_scale = (m.a - 1.0).abs() > f32::EPSILON
+                                    || (m.d - 1.0).abs() > f32::EPSILON;
+                                let need_scale = (entry.scale_x - 1.0).abs() > f32::EPSILON
+                                    || (entry.scale_y - 1.0).abs() > f32::EPSILON;
+                                if need_scale && !place_has_scale {
                                     let new_w = (bitmap.bitmap_width() as f32
                                         * entry.scale_x)
                                         .round() as u32;
@@ -4727,19 +4730,16 @@ impl<'gc, 'a> MovieClip<'gc> {
                                         .round() as u32;
                                     bitmap.set_display_dimensions(new_w, new_h);
                                     bitmap.set_xui_scale(entry.scale_x, entry.scale_y);
-                                    let m = child.base().matrix();
-                                    tracing::info!(
-                                        "xui_bitmap scale set: class={} depth={} dims={}x{} xui_scale={}x{} placeM a={} b={} c={} d={} tx={} ty={}",
-                                        decoded, depth, new_w, new_h, entry.scale_x, entry.scale_y,
-                                        m.a, m.b, m.c, m.d,
-                                        m.tx.to_pixels(), m.ty.to_pixels()
-                                    );
-                                } else {
-                                    tracing::warn!(
-                                        "xui_bitmap scale: class={} placed child is not a Bitmap, skipping",
-                                        decoded
-                                    );
                                 }
+                                tracing::info!(
+                                    "xui_bitmap placed: class={} depth={} tex={}x{} xui_scale={}x{} applied={} placeM a={} b={} c={} d={} tx={} ty={}",
+                                    decoded, depth,
+                                    bitmap.bitmap_width(), bitmap.bitmap_height(),
+                                    entry.scale_x, entry.scale_y,
+                                    need_scale && !place_has_scale,
+                                    m.a, m.b, m.c, m.d,
+                                    m.tx.to_pixels(), m.ty.to_pixels()
+                                );
                             }
                         }
                     }
