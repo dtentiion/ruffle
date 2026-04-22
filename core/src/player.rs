@@ -2531,6 +2531,8 @@ impl Player {
         &mut self,
         class_name: &str,
         png_bytes: Vec<u8>,
+        display_scale_x: f32,
+        display_scale_y: f32,
     ) -> Result<u16, String> {
         use crate::character::{BitmapCharacter, Character, CompressedBitmap};
         use gc_arena::Gc;
@@ -2569,11 +2571,17 @@ impl Player {
                 .library_for_movie_mut(movie.clone())
                 .register_character(chid, bitmap);
 
-            crate::tag_utils::xui_bitmap_register(class_name.to_string(), movie, chid);
+            crate::tag_utils::xui_bitmap_register(
+                class_name.to_string(),
+                movie,
+                chid,
+                display_scale_x,
+                display_scale_y,
+            );
 
             tracing::info!(
-                "register_xui_bitmap: '{}' -> chid={} ({}x{})",
-                class_name, chid, width, height
+                "register_xui_bitmap: '{}' -> chid={} ({}x{}) display_scale={}x{}",
+                class_name, chid, width, height, display_scale_x, display_scale_y
             );
             Ok(chid)
         })

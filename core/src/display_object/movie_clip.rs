@@ -4691,6 +4691,37 @@ impl<'gc, 'a> MovieClip<'gc> {
                     depth,
                     &place_object,
                 );
+
+                // XUI import scale: if this class was registered as an
+                // XUI bitmap with a non-unit Scale (skin_Minecraft.xui's
+                // `<Scale>` element - Panorama_Background_S/N carry
+                // Scale=5 so the 820x144 tile renders as 4100x720),
+                // multiply that into the placed child's matrix. Without
+                // this the authored tile positions leave visible gaps.
+                if let Some(class_name_swf) = place_object.class_name {
+                    let movie = self.movie();
+                    let encoding = swf::SwfStr::encoding_for_version(movie.version());
+                    let decoded = class_name_swf.to_str_lossy(encoding);
+                    if let Some(entry) =
+                        crate::tag_utils::xui_bitmap_lookup(decoded.as_ref())
+                    {
+                        let need_scale = (entry.scale_x - 1.0).abs() > f32::EPSILON
+                            || (entry.scale_y - 1.0).abs() > f32::EPSILON;
+                        if need_scale {
+                            if let Some(child) = self.child_by_depth(depth) {
+                                use ruffle_render::matrix::Matrix as RenderMatrix;
+                                let current = child.base().matrix();
+                                let scale_m = RenderMatrix::scale(entry.scale_x, entry.scale_y);
+                                child.set_matrix(current * scale_m);
+                                tracing::info!(
+                                    "xui_bitmap scale applied: class={} scale={}x{}",
+                                    decoded, entry.scale_x, entry.scale_y
+                                );
+                            }
+                        }
+                    }
+                }
+
                 return Ok(());
             }
         }
@@ -4785,16 +4816,16 @@ impl<'gc, 'a> MovieClip<'gc> {
                 // The host registers those PNGs as synthetic Bitmap
                 // characters keyed by name via Player::register_xui_bitmap;
                 // check that registry before giving up.
-                if let Some((xui_movie, xui_chid)) =
-                    crate::tag_utils::xui_bitmap_lookup(&decoded_log)
-                {
+                if let Some(entry) = crate::tag_utils::xui_bitmap_lookup(&decoded_log) {
                     tracing::info!(
-                        "resolve_place_by_class_name: XUI bitmap fallback {} -> {:?}#{}",
+                        "resolve_place_by_class_name: XUI bitmap fallback {} -> {:?}#{} scale={}x{}",
                         decoded_log,
-                        xui_movie.url(),
-                        xui_chid
+                        entry.movie.url(),
+                        entry.char_id,
+                        entry.scale_x,
+                        entry.scale_y,
                     );
-                    return Some((xui_movie, xui_chid));
+                    return Some((entry.movie, entry.char_id));
                 }
                 tracing::warn!(
                     "resolve_place_by_class_name: get_defined_value failed for {}: {:?}",

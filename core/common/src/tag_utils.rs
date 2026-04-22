@@ -515,7 +515,22 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 static XUI_SYNTHETIC_MOVIE: OnceLock<Arc<SwfMovie>> = OnceLock::new();
-static XUI_BITMAPS: OnceLock<Mutex<HashMap<String, (Arc<SwfMovie>, u16)>>> = OnceLock::new();
+
+/// Stored per-class XUI data. `scale_x`/`scale_y` mirror the XUI
+/// `<Scale>` element (skin_Minecraft.xui) - a texture-import scale
+/// that Iggy applies on console when the authored PNG is smaller than
+/// the authored display slot. Panorama_Background_S/N have Scale=5 in
+/// the XUI so the 820x144 tile renders as 4100x720; registering a
+/// bitmap without that scale leaves visible gaps between tile copies.
+#[derive(Clone)]
+pub struct XuiBitmapEntry {
+    pub movie: Arc<SwfMovie>,
+    pub char_id: u16,
+    pub scale_x: f32,
+    pub scale_y: f32,
+}
+
+static XUI_BITMAPS: OnceLock<Mutex<HashMap<String, XuiBitmapEntry>>> = OnceLock::new();
 
 /// Lazy-init and return the single SwfMovie used to back all XUI bitmap
 /// characters. Using one shared movie means the library lookup in
@@ -526,19 +541,33 @@ pub fn xui_synthetic_movie() -> Arc<SwfMovie> {
         .clone()
 }
 
-/// Register a class-name -> (movie, chid) mapping. Called from the
-/// Player::register_xui_bitmap path after the bitmap has been added to
-/// the synthetic library.
-pub fn xui_bitmap_register(class_name: String, movie: Arc<SwfMovie>, char_id: u16) {
+/// Register a class-name -> bitmap-entry mapping. `scale_x`/`scale_y`
+/// of 1.0 means no texture-import stretch; for panorama tiles the
+/// host passes 5.0 to match the XUI authored display slot.
+pub fn xui_bitmap_register(
+    class_name: String,
+    movie: Arc<SwfMovie>,
+    char_id: u16,
+    scale_x: f32,
+    scale_y: f32,
+) {
     let map = XUI_BITMAPS.get_or_init(|| Mutex::new(HashMap::new()));
     if let Ok(mut guard) = map.lock() {
-        guard.insert(class_name, (movie, char_id));
+        guard.insert(
+            class_name,
+            XuiBitmapEntry {
+                movie,
+                char_id,
+                scale_x,
+                scale_y,
+            },
+        );
     }
 }
 
 /// Look up a class-name mapping. Returns None if unregistered. Used by
 /// the resolver fallback in movie_clip.rs.
-pub fn xui_bitmap_lookup(class_name: &str) -> Option<(Arc<SwfMovie>, u16)> {
+pub fn xui_bitmap_lookup(class_name: &str) -> Option<XuiBitmapEntry> {
     let map = XUI_BITMAPS.get()?;
     map.lock().ok()?.get(class_name).cloned()
 }
