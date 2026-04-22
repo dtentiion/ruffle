@@ -2903,6 +2903,57 @@ impl Player {
         })
     }
 
+    /// Stash the current matrix of every XUI-origin Bitmap into its
+    /// xui_saved_matrix slot. Paired with restore_xui_matrices, used
+    /// to freeze the panorama/logo/tooltips visual position across
+    /// a scene transition (headless ticks + per-button init calls)
+    /// that would otherwise drift the scroll.
+    pub fn snapshot_xui_matrices(&mut self) {
+        use crate::display_object::{DisplayObject, TDisplayObject, TDisplayObjectContainer};
+        fn walk<'gc>(dobj: DisplayObject<'gc>) {
+            if let Some(bitmap) = dobj.as_bitmap() {
+                if bitmap.is_xui_origin() {
+                    bitmap.set_saved_matrix(Some(bitmap.base().matrix()));
+                }
+            }
+            if let Some(container) = dobj.as_container() {
+                for child in container.iter_render_list() {
+                    walk(child);
+                }
+            }
+        }
+        self.mutate_with_update_context(|context| {
+            let stage: DisplayObject<'_> = context.stage.into();
+            walk(stage);
+        });
+    }
+
+    /// Restore every XUI-origin Bitmap's matrix from its
+    /// xui_saved_matrix slot (set by snapshot_xui_matrices) and
+    /// clear the slot. Call after the transition work finishes.
+    pub fn restore_xui_matrices(&mut self) {
+        use crate::display_object::{DisplayObject, TDisplayObject, TDisplayObjectContainer};
+        fn walk<'gc>(dobj: DisplayObject<'gc>) {
+            if let Some(bitmap) = dobj.as_bitmap() {
+                if bitmap.is_xui_origin() {
+                    if let Some(m) = bitmap.saved_matrix() {
+                        bitmap.set_matrix(m);
+                        bitmap.set_saved_matrix(None);
+                    }
+                }
+            }
+            if let Some(container) = dobj.as_container() {
+                for child in container.iter_render_list() {
+                    walk(child);
+                }
+            }
+        }
+        self.mutate_with_update_context(|context| {
+            let stage: DisplayObject<'_> = context.stage.into();
+            walk(stage);
+        });
+    }
+
     /// Advance the Player one headless tick while freezing the matrices
     /// of every XUI-origin Bitmap. Used for LCE-iOS scene transitions:
     /// the host runs 30 headless ticks after replace_root_movie so the
