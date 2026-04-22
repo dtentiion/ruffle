@@ -2910,22 +2910,34 @@ impl Player {
     /// that would otherwise drift the scroll.
     pub fn snapshot_xui_matrices(&mut self) {
         use crate::display_object::{DisplayObject, TDisplayObject, TDisplayObjectContainer};
-        fn walk<'gc>(dobj: DisplayObject<'gc>) {
+        use std::cell::Cell;
+        let count = Cell::new(0u32);
+        let first_tx = Cell::new(f64::NAN);
+        fn walk<'gc>(dobj: DisplayObject<'gc>, count: &Cell<u32>, first_tx: &Cell<f64>) {
             if let Some(bitmap) = dobj.as_bitmap() {
                 if bitmap.is_xui_origin() {
-                    bitmap.set_saved_matrix(Some(bitmap.base().matrix()));
+                    let m = bitmap.base().matrix();
+                    bitmap.set_saved_matrix(Some(m));
+                    if count.get() == 0 {
+                        first_tx.set(m.tx.to_pixels());
+                    }
+                    count.set(count.get() + 1);
                 }
             }
             if let Some(container) = dobj.as_container() {
                 for child in container.iter_render_list() {
-                    walk(child);
+                    walk(child, count, first_tx);
                 }
             }
         }
         self.mutate_with_update_context(|context| {
             let stage: DisplayObject<'_> = context.stage.into();
-            walk(stage);
+            walk(stage, &count, &first_tx);
         });
+        tracing::info!(
+            "snapshot_xui_matrices: stashed {} bitmap(s), first tx={}",
+            count.get(), first_tx.get()
+        );
     }
 
     /// Restore every XUI-origin Bitmap's matrix from its
@@ -2933,25 +2945,47 @@ impl Player {
     /// clear the slot. Call after the transition work finishes.
     pub fn restore_xui_matrices(&mut self) {
         use crate::display_object::{DisplayObject, TDisplayObject, TDisplayObjectContainer};
-        fn walk<'gc>(dobj: DisplayObject<'gc>) {
+        use std::cell::Cell;
+        let found = Cell::new(0u32);
+        let restored = Cell::new(0u32);
+        let first_before = Cell::new(f64::NAN);
+        let first_after = Cell::new(f64::NAN);
+        fn walk<'gc>(
+            dobj: DisplayObject<'gc>,
+            found: &Cell<u32>,
+            restored: &Cell<u32>,
+            first_before: &Cell<f64>,
+            first_after: &Cell<f64>,
+        ) {
             if let Some(bitmap) = dobj.as_bitmap() {
                 if bitmap.is_xui_origin() {
+                    found.set(found.get() + 1);
                     if let Some(m) = bitmap.saved_matrix() {
+                        if restored.get() == 0 {
+                            first_before.set(bitmap.base().matrix().tx.to_pixels());
+                            first_after.set(m.tx.to_pixels());
+                        }
                         bitmap.set_matrix(m);
                         bitmap.set_saved_matrix(None);
+                        restored.set(restored.get() + 1);
                     }
                 }
             }
             if let Some(container) = dobj.as_container() {
                 for child in container.iter_render_list() {
-                    walk(child);
+                    walk(child, found, restored, first_before, first_after);
                 }
             }
         }
         self.mutate_with_update_context(|context| {
             let stage: DisplayObject<'_> = context.stage.into();
-            walk(stage);
+            walk(stage, &found, &restored, &first_before, &first_after);
         });
+        tracing::info!(
+            "restore_xui_matrices: found={} restored={} first_before.tx={} first_after.tx={}",
+            found.get(), restored.get(),
+            first_before.get(), first_after.get()
+        );
     }
 
     /// Advance the Player one headless tick while freezing the matrices
