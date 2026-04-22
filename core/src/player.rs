@@ -2598,6 +2598,8 @@ impl Player {
         bytes: Vec<u8>,
         url: String,
         depth: i32,
+        scale_x: f32,
+        scale_y: f32,
     ) -> String {
         use crate::avm2::Activation as Avm2Activation;
         use crate::display_object::{TDisplayObject, TDisplayObjectContainer};
@@ -2661,11 +2663,29 @@ impl Player {
             sibling.post_instantiation(context, None, Instantiator::Movie, false);
             sibling.enter_frame(context);
 
+            // Apply a scale matrix directly (not set_width, which
+            // divides by current bounds and nukes the object when
+            // bounds are zero at attach time). set_matrix stamps an
+            // absolute transform onto the DisplayObject, independent
+            // of its content bounds. Used by the host to stretch the
+            // panorama vertically, upscale the logo, etc. - console
+            // does equivalent scaling per movie via
+            // IggyPlayerSetDisplaySize but our stage is shared so we
+            // set the scale on the sibling directly.
+            if (scale_x - 1.0).abs() > f32::EPSILON
+                || (scale_y - 1.0).abs() > f32::EPSILON
+            {
+                use ruffle_render::matrix::Matrix as RenderMatrix;
+                sibling.set_matrix(RenderMatrix::scale(scale_x, scale_y));
+            }
+
             format!(
-                "ok: url={:?} depth={} frames={}",
+                "ok: url={:?} depth={} frames={} scale={}x{}",
                 movie.url(),
                 depth,
-                movie.num_frames()
+                movie.num_frames(),
+                scale_x,
+                scale_y
             )
         })
     }
