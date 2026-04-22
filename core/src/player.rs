@@ -2513,6 +2513,84 @@ impl Player {
         });
     }
 
+    /// Load a sibling SWF (Panorama1080.swf, ComponentLogo1080.swf etc.)
+    /// from bytes and attach its root timeline as a direct child of the
+    /// current root clip at the given depth. Mirrors how the console
+    /// Iggy player composites scenes: each menu SWF is its own movie
+    /// and the host layers them in z-order. On console the equivalent
+    /// is UIController maintaining multiple IggyPlayer instances and
+    /// rendering them one on top of the other; in our single-Player
+    /// model we achieve the same visual result by attaching sibling
+    /// movies as children of the current root.
+    ///
+    /// The sibling movie's library gets its own domain that inherits
+    /// from the root movie's domain, so its AS3 classes resolve
+    /// against the shared domain and cross-SWF class references
+    /// (e.g. Panorama1080 importing skinHDGraphics) work.
+    pub fn add_sibling_swf_to_root(
+        &mut self,
+        bytes: Vec<u8>,
+        url: String,
+        depth: i32,
+    ) -> String {
+        use crate::avm2::Activation as Avm2Activation;
+        use crate::display_object::{TDisplayObject, TDisplayObjectContainer};
+        use crate::vminterface::Instantiator;
+        self.mutate_with_update_context(|context| {
+            let movie = match SwfMovie::from_data(&bytes, url.clone(), None) {
+                Ok(m) => Arc::new(m),
+                Err(e) => return format!("err: parse swf: {:?}", e),
+            };
+            let Some(root) = context.stage.root_clip() else {
+                return String::from("err: no root clip");
+            };
+            let Some(_root_mc) = root.as_movie_clip() else {
+                return String::from("err: root not a movie clip");
+            };
+
+            // Register the new movie's library and bind it to the
+            // stage domain so its ABC classes resolve against the same
+            // domain as the root movie. This matches how console
+            // Iggy-composited scenes share the top-level domain.
+            let stage_domain = context.avm2.stage_domain();
+            context
+                .library
+                .library_for_movie_mut(movie.clone())
+                .set_avm2_domain(stage_domain);
+
+            // Build a MovieClip for the sibling using the same pattern
+            // as Player::set_root_movie, but with is_root=false so it
+            // renders as a child instead of owning the stage.
+            let mut activation = Avm2Activation::from_domain(context, stage_domain);
+            let sibling: DisplayObject<'_> =
+                crate::display_object::MovieClip::player_root_movie(&mut activation, movie.clone())
+                    .into();
+            drop(activation);
+
+            // player_root_movie flags the clip as is_root; unset so the
+            // sibling behaves like a regular child, not the stage root.
+            sibling.set_is_root(false);
+            sibling.set_depth(depth);
+            sibling.set_parent(context, Some(root));
+            sibling.set_instantiated_by_timeline(true);
+
+            // Insert at depth on the existing root container.
+            if let Some(container) = root.as_container() {
+                container.replace_at_depth(context, sibling, depth);
+            }
+
+            sibling.post_instantiation(context, None, Instantiator::Movie, false);
+            sibling.enter_frame(context);
+
+            format!(
+                "ok: url={:?} depth={} frames={}",
+                movie.url(),
+                depth,
+                movie.num_frames()
+            )
+        })
+    }
+
     /// Instantiate an AS3 class (e.g. `Panorama`) that is bound via
     /// SymbolClass to a library character in one of the loaded SWFs,
     /// and attach the resulting DisplayObject as a direct child of the
