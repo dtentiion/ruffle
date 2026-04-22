@@ -2600,6 +2600,8 @@ impl Player {
         depth: i32,
         scale_x: f32,
         scale_y: f32,
+        tx: f32,
+        ty: f32,
     ) -> String {
         use crate::avm2::Activation as Avm2Activation;
         use crate::display_object::{TDisplayObject, TDisplayObjectContainer};
@@ -2674,18 +2676,23 @@ impl Player {
             // set the scale on the sibling directly.
             if (scale_x - 1.0).abs() > f32::EPSILON
                 || (scale_y - 1.0).abs() > f32::EPSILON
+                || tx.abs() > f32::EPSILON
+                || ty.abs() > f32::EPSILON
             {
                 use ruffle_render::matrix::Matrix as RenderMatrix;
-                sibling.set_matrix(RenderMatrix::scale(scale_x, scale_y));
+                use swf::Twips;
+                let mut m = RenderMatrix::scale(scale_x, scale_y);
+                m.tx = Twips::from_pixels(tx as f64);
+                m.ty = Twips::from_pixels(ty as f64);
+                sibling.set_matrix(m);
             }
 
             format!(
-                "ok: url={:?} depth={} frames={} scale={}x{}",
+                "ok: url={:?} depth={} frames={} scale={}x{} t={},{}",
                 movie.url(),
                 depth,
                 movie.num_frames(),
-                scale_x,
-                scale_y
+                scale_x, scale_y, tx, ty
             )
         })
     }
