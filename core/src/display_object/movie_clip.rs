@@ -4743,9 +4743,16 @@ impl<'gc, 'a> MovieClip<'gc> {
                                 // that width, stash the excess so every
                                 // subsequent apply_place_object subtracts
                                 // it, keeping the tile adjacent to tile1.
+                                // Tile width in authored parent coords: native
+                                // bitmap pixels * the PlaceObject matrix's
+                                // scale_x. Do NOT also multiply by the XUI
+                                // registry scale (entry.scale_x) because when
+                                // m.a != 1 the registry scale is already
+                                // baked into m.a - stacking them gave a
+                                // 25x-too-large tile_w and the gap detection
+                                // silently skipped firing.
                                 let tile_width_px = bitmap.bitmap_width() as f32
-                                    * m.a.abs()
-                                    * entry.scale_x.max(1.0);
+                                    * m.a.abs();
                                 let tx_px = m.tx.to_pixels() as f32;
                                 let mut closure_offset: f32 = 0.0;
                                 if tile_width_px > f32::EPSILON
