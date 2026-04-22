@@ -136,6 +136,11 @@ pub struct BitmapGraphicData<'gc> {
     /// over time to see if the Panorama scroll animation is running.
     xui_origin: Cell<bool>,
 
+    /// Per-instance render counter for the xui_origin diagnostic.
+    /// Process-global counters get biased toward whichever Bitmap
+    /// renders first in the frame, so we keep one here instead.
+    xui_render_tick: Cell<u64>,
+
     /// Whether or not bitmap smoothing is enabled.
     smoothing: Cell<bool>,
 
@@ -174,6 +179,7 @@ impl<'gc> Bitmap<'gc> {
                 height: Cell::new(height),
                 xui_scale: Cell::new(None),
                 xui_origin: Cell::new(false),
+                xui_render_tick: Cell::new(0),
                 smoothing: Cell::new(smoothing),
                 pixel_snapping: Cell::new(PixelSnapping::Auto),
                 avm2_object: Lock::new(None),
@@ -436,28 +442,24 @@ impl<'gc> TDisplayObject<'gc> for Bitmap<'gc> {
 
         let xui_scale = self.0.xui_scale.get();
 
-        // Diagnostic probe: sample the composed transform for bitmaps
-        // flagged as coming from the 4J XUI texture-import path every
-        // N render calls. Needed to tell whether the Panorama tile
-        // scroll animation is actually advancing at runtime vs. the
-        // tiles staying at their initial authored positions (tile1 at
-        // tx=0, tile2 at tx=6150, a 2050-px authored gap). Rate-limited
-        // via a process-global counter so we don't flood the log.
-        {
-            use std::sync::atomic::{AtomicU64, Ordering};
-            static RENDER_SAMPLE_COUNTER: AtomicU64 = AtomicU64::new(0);
-            if self.0.xui_origin.get() {
-                let n = RENDER_SAMPLE_COUNTER.fetch_add(1, Ordering::Relaxed);
-                if n % 600 == 0 {
-                    let composed = context.transform_stack.transform().matrix;
-                    let world = self.base().matrix();
-                    tracing::info!(
-                        "xui_bitmap tick sample #{}: chid={} world.tx={} world.a={} composed.tx={} composed.a={} composed.d={}",
-                        n, self.id(),
-                        world.tx.to_pixels(), world.a,
-                        composed.tx.to_pixels(), composed.a, composed.d,
-                    );
-                }
+        // Diagnostic probe: sample the composed transform for each
+        // XUI-origin Bitmap (one counter per instance so tile2 also
+        // gets sampled, not just whichever tile renders first per
+        // frame). Panorama tile1 and tile2 both go through here with
+        // independent counters.
+        if self.0.xui_origin.get() {
+            let n = self.0.xui_render_tick.get();
+            self.0.xui_render_tick.set(n + 1);
+            if n % 150 == 0 {
+                let composed = context.transform_stack.transform().matrix;
+                let world = self.base().matrix();
+                let ptr = Gc::as_ptr(self.0) as usize;
+                tracing::info!(
+                    "xui_bitmap tile sample tick={} ptr={:x} chid={} world.tx={} world.a={} composed.tx={} composed.d={}",
+                    n, ptr, self.id(),
+                    world.tx.to_pixels(), world.a,
+                    composed.tx.to_pixels(), composed.d,
+                );
             }
         }
 
