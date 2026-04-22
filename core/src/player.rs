@@ -2850,6 +2850,28 @@ impl Player {
         })
     }
 
+    /// Toggle the `visible` flag on a named direct child of the root clip.
+    /// Returns true if a child with that name was found. Used by the
+    /// LCE-iOS host to hide 4J's `iggy_Splash` loading placeholder, which
+    /// on console is hidden by Iggy the moment a scene finishes loading
+    /// but otherwise sits permanently in the display list.
+    pub fn set_root_child_visible(&mut self, name: &str, visible: bool) -> bool {
+        use crate::display_object::{TDisplayObject, TDisplayObjectContainer};
+        self.mutate_with_update_context(|context| {
+            let Some(root) = context.stage.root_clip() else { return false; };
+            let Some(container) = root.as_container() else { return false; };
+            let children: Vec<_> = container.iter_render_list().collect();
+            for child in children {
+                let child_name = child.name().map(|n| n.to_string()).unwrap_or_default();
+                if child_name == name {
+                    child.set_visible(context, visible);
+                    return true;
+                }
+            }
+            false
+        })
+    }
+
     /// Like `enumerate_root_children`, but one level deeper: returns the
     /// direct children of the named child. Used by the iOS host to verify
     /// whether e.g. `Button1` actually has its timeline-placed
