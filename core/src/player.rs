@@ -2659,31 +2659,11 @@ impl Player {
             sibling.post_instantiation(context, None, Instantiator::Movie, false);
             sibling.enter_frame(context);
 
-            // Match the sibling's size to the stage. On console, Iggy
-            // draws each scene movie into the same viewport the host
-            // picked (via IggyPlayerSetDisplaySize at UIScene.cpp:362),
-            // so a 1920x1080-authored Panorama1080 and a 1920x1080-
-            // authored MainMenu both fill identically. In our port the
-            // sibling keeps its native dimensions unless we explicitly
-            // resize it, which leaves blank space when the render
-            // surface isn't exactly 1920x1080. Force the same size as
-            // the stage's current movie-size so the two match.
-            let (stage_w, stage_h) = {
-                let mw = context.stage.movie_size();
-                (mw.0 as i32, mw.1 as i32)
-            };
-            if stage_w > 0 && stage_h > 0 {
-                use swf::Twips;
-                sibling.set_width(context, Twips::from_pixels_i32(stage_w).to_pixels());
-                sibling.set_height(context, Twips::from_pixels_i32(stage_h).to_pixels());
-            }
-
             format!(
-                "ok: url={:?} depth={} frames={} fit_to={}x{}",
+                "ok: url={:?} depth={} frames={}",
                 movie.url(),
                 depth,
-                movie.num_frames(),
-                stage_w, stage_h
+                movie.num_frames()
             )
         })
     }
