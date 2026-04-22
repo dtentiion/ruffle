@@ -2792,12 +2792,14 @@ impl Player {
             let two_args = [Avm2Value::String(label_avm), Avm2Value::Number(id)];
             let one_arg = [Avm2Value::String(label_avm)];
             let int_arg = [Avm2Value::Integer(id as i32)];
+            let zero_args: [Avm2Value; 0] = [];
             // LCE's FJ_Button exposes Init(label, id), SetLabel(label),
-            // and ChangeState(stateInt); pick the arg shape per method
-            // so we don't trip ArgumentError #1063.
+            // ChangeState(stateInt), HideUntilInit() (0 args); pick the
+            // arg shape per method so we don't trip ArgumentError #1063.
             let args: &[Avm2Value] = match method_name {
                 "SetLabel" => &one_arg,
                 "ChangeState" | "EnableButton" => &int_arg,
+                "HideUntilInit" | "LostFocus" => &zero_args,
                 _ => &two_args,
             };
             match Avm2Value::from(obj).call_property(
