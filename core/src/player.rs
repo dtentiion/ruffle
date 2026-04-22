@@ -2908,6 +2908,50 @@ impl Player {
     /// to freeze the panorama/logo/tooltips visual position across
     /// a scene transition (headless ticks + per-button init calls)
     /// that would otherwise drift the scroll.
+    /// Walk the stage's direct children and toggle is_playing on
+    /// every non-root child (depth != 0) plus every MovieClip
+    /// descendant underneath them. Depth 0 is the scene root, which
+    /// must keep advancing so the new scene's construction chain
+    /// completes during the headless transition burst. Everything
+    /// else (panorama, logo, tooltips) freezes its Timeline so the
+    /// scroll animation doesn't drift during those 500 ms.
+    pub fn set_xui_siblings_playing(&mut self, playing: bool) {
+        use crate::display_object::{DisplayObject, TDisplayObject, TDisplayObjectContainer};
+        use std::cell::Cell;
+        let count = Cell::new(0u32);
+        self.mutate_with_update_context(|context| {
+            fn walk<'gc>(dobj: DisplayObject<'gc>, playing: bool, context: &mut crate::context::UpdateContext<'gc>) {
+                if let Some(mc) = dobj.as_movie_clip() {
+                    if playing {
+                        mc.play();
+                    } else {
+                        mc.stop(context);
+                    }
+                }
+                if let Some(container) = dobj.as_container() {
+                    let kids: Vec<_> = container.iter_render_list().collect();
+                    for child in kids {
+                        walk(child, playing, context);
+                    }
+                }
+            }
+            let stage_container: DisplayObject<'_> = context.stage.into();
+            if let Some(stage) = stage_container.as_container() {
+                let stage_children: Vec<_> = stage.iter_render_list().collect();
+                for child in stage_children {
+                    if child.depth() != 0 {
+                        walk(child, playing, context);
+                        count.set(count.get() + 1);
+                    }
+                }
+            }
+        });
+        tracing::info!(
+            "set_xui_siblings_playing({}): touched {} sibling root(s)",
+            playing, count.get()
+        );
+    }
+
     pub fn snapshot_xui_matrices(&mut self) {
         use crate::display_object::{DisplayObject, TDisplayObject, TDisplayObjectContainer};
         use std::cell::Cell;
