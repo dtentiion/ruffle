@@ -431,22 +431,15 @@ impl<'gc> TDisplayObject<'gc> for Bitmap<'gc> {
     }
 
     fn render_self(self, context: &mut RenderContext<'_, 'gc>) {
-        if !context.is_offscreen
+        // Diagnostic probe runs BEFORE the cull check so tile2 at the
+        // authored tx=6150 gets sampled even while it's off-screen -
+        // otherwise we never see its matrix and can't tell whether
+        // the scroll animation is updating its position over time.
+        let culled = !context.is_offscreen
             && !self
                 .world_bounds(BoundsMode::Engine)
-                .intersects(&context.stage.view_bounds())
-        {
-            // Off-screen; culled
-            return;
-        }
+                .intersects(&context.stage.view_bounds());
 
-        let xui_scale = self.0.xui_scale.get();
-
-        // Diagnostic probe: sample the composed transform for each
-        // XUI-origin Bitmap (one counter per instance so tile2 also
-        // gets sampled, not just whichever tile renders first per
-        // frame). Panorama tile1 and tile2 both go through here with
-        // independent counters.
         if self.0.xui_origin.get() {
             let n = self.0.xui_render_tick.get();
             self.0.xui_render_tick.set(n + 1);
@@ -455,13 +448,19 @@ impl<'gc> TDisplayObject<'gc> for Bitmap<'gc> {
                 let world = self.base().matrix();
                 let ptr = Gc::as_ptr(self.0) as usize;
                 tracing::info!(
-                    "xui_bitmap tile sample tick={} ptr={:x} chid={} world.tx={} world.a={} composed.tx={} composed.d={}",
-                    n, ptr, self.id(),
+                    "xui_bitmap tile sample tick={} ptr={:x} chid={} culled={} world.tx={} world.a={} composed.tx={} composed.d={}",
+                    n, ptr, self.id(), culled,
                     world.tx.to_pixels(), world.a,
                     composed.tx.to_pixels(), composed.d,
                 );
             }
         }
+
+        if culled {
+            return;
+        }
+
+        let xui_scale = self.0.xui_scale.get();
 
         if let Some((sx, sy)) = xui_scale {
             use ruffle_render::matrix::Matrix as RenderMatrix;
