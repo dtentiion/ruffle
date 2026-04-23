@@ -3186,6 +3186,38 @@ impl Player {
     /// Returns a short human-readable status string (`"ok: <return value>"`
     /// on success, `"err: <reason>"` on any failure along the path) so the
     /// caller can log it without needing to marshal AVM errors across FFI.
+    /// Set the AS3 stage focus to a named direct child of the root
+    /// clip. Mirrors console's IggyPlayerSetFocusRS auto-focus that
+    /// UIScene::sendInputToMovie runs when currentFocus is null
+    /// (Common/UI/UIScene.cpp:1066-1081). Without it, arrow-key
+    /// input from the gamepad mapping goes to no DisplayObject
+    /// because nothing is focused, so sliders and checkboxes ignore
+    /// LEFT / RIGHT / SPACE and look frozen.
+    ///
+    /// Returns true if the named child was found and focused.
+    pub fn set_focus_to_named_child(&mut self, child_name: &str) -> bool {
+        use crate::display_object::{TDisplayObject, TDisplayObjectContainer};
+        self.mutate_with_update_context(|context| {
+            let Some(root) = context.stage.root_clip() else { return false; };
+            let Some(container) = root.as_container() else { return false; };
+            let children: Vec<_> = container.iter_render_list().collect();
+            let mut target = None;
+            for child in children {
+                let name = child.name().map(|n| n.to_string()).unwrap_or_default();
+                if name == child_name {
+                    target = child.as_interactive();
+                    break;
+                }
+            }
+            let Some(io) = target else { return false; };
+            // focus_tracker.set borrows context mutably; capture
+            // the tracker first then release the context handle.
+            let tracker = context.focus_tracker;
+            tracker.set(Some(io), context);
+            true
+        })
+    }
+
     /// Console UIControl_CheckBox::init calls Init(label, id, checked)
     /// with 3 args (string, number, bool); UIControl_Slider::init calls
     /// Init(label, id, min, max, current) with 5 args. Our generic
