@@ -3195,6 +3195,16 @@ impl Player {
     /// LEFT / RIGHT / SPACE and look frozen.
     ///
     /// Returns true if the named child was found and focused.
+    /// Clear AS3 stage focus. Paired with set_focus_to_named_child,
+    /// used on scene transitions so the previous scene's focus
+    /// highlight doesn't leak into the new one.
+    pub fn clear_focus(&mut self) {
+        self.mutate_with_update_context(|context| {
+            let tracker = context.focus_tracker;
+            tracker.reset_focus(context);
+        });
+    }
+
     pub fn set_focus_to_named_child(&mut self, child_name: &str) -> bool {
         use crate::display_object::{TDisplayObject, TDisplayObjectContainer};
         self.mutate_with_update_context(|context| {
