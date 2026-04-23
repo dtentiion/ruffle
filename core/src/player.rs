@@ -3198,6 +3198,18 @@ impl Player {
     /// Clear AS3 stage focus. Paired with set_focus_to_named_child,
     /// used on scene transitions so the previous scene's focus
     /// highlight doesn't leak into the new one.
+    /// Enable or disable Ruffle's auto-drawn yellow focus rectangle.
+    /// LCE controls ship with their own authored focus-outline art
+    /// (FJ_Slider_Outline, FJ_CheckBox_Outline), so Ruffle's Flash
+    /// Player accessibility highlight paints a second yellow frame
+    /// overlapping them. Host calls this once at player init with
+    /// `suppress = true`.
+    pub fn set_suppress_auto_highlight(&mut self, suppress: bool) {
+        self.mutate_with_update_context(|context| {
+            context.focus_tracker.set_suppress_auto_highlight(suppress);
+        });
+    }
+
     pub fn clear_focus(&mut self) {
         self.mutate_with_update_context(|context| {
             let tracker = context.focus_tracker;

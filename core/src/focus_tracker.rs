@@ -22,6 +22,13 @@ use swf::{Color, Rectangle, Twips};
 pub struct FocusTrackerData<'gc> {
     focus: Lock<Option<InteractiveObject<'gc>>>,
     highlight: Cell<Highlight>,
+    // When true, keep highlight forced to Inactive regardless of
+    // what calculate_highlight would return. Hosts use this to
+    // suppress Ruffle's auto-drawn yellow focus rectangle when the
+    // SWF supplies its own focus outline art (e.g. LCE's
+    // FJ_Slider_Outline / FJ_CheckBox_Outline children that paint a
+    // yellow frame around the focused control already).
+    suppress_auto_highlight: Cell<bool>,
 }
 
 #[derive(Copy, Clone)]
@@ -64,8 +71,19 @@ impl<'gc> FocusTracker<'gc> {
             FocusTrackerData {
                 focus: Lock::new(None),
                 highlight: Cell::new(Highlight::Inactive),
+                suppress_auto_highlight: Cell::new(false),
             },
         ))
+    }
+
+    /// Toggle the host-side suppression flag. While true,
+    /// update_highlight always leaves highlight at Inactive no
+    /// matter what calculate_highlight would pick.
+    pub fn set_suppress_auto_highlight(&self, suppress: bool) {
+        self.0.suppress_auto_highlight.set(suppress);
+        if suppress {
+            self.0.highlight.set(Highlight::Inactive);
+        }
     }
 
     pub fn highlight(&self) -> Highlight {
@@ -359,6 +377,10 @@ impl<'gc> FocusTracker<'gc> {
     }
 
     pub fn update_highlight(&self, context: &mut UpdateContext<'gc>) {
+        if self.0.suppress_auto_highlight.get() {
+            self.0.highlight.set(Highlight::Inactive);
+            return;
+        }
         self.0.highlight.replace(self.calculate_highlight(context));
     }
 
