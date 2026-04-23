@@ -3186,6 +3186,90 @@ impl Player {
     /// Returns a short human-readable status string (`"ok: <return value>"`
     /// on success, `"err: <reason>"` on any failure along the path) so the
     /// caller can log it without needing to marshal AVM errors across FFI.
+    /// Console UIControl_CheckBox::init calls Init(label, id, checked)
+    /// with 3 args (string, number, bool); UIControl_Slider::init calls
+    /// Init(label, id, min, max, current) with 5 args. Our generic
+    /// call_init_on_named_child only knows the FJ_Button shape, so
+    /// checkbox/slider controls stay in the "Not Initialised!" state
+    /// until these two variants land instead.
+    pub fn call_init_checkbox(
+        &mut self,
+        child_name: &str,
+        label: &str,
+        id: f64,
+        checked: bool,
+    ) -> String {
+        use crate::avm2::{
+            Activation as Avm2Activation, FunctionArgs, Multiname, Value as Avm2Value,
+        };
+        use crate::display_object::{TDisplayObject, TDisplayObjectContainer};
+        use crate::string::{AvmString, WString};
+        self.mutate_with_update_context(|context| {
+            let Some(root) = context.stage.root_clip() else { return String::from("err: no root_clip"); };
+            let Some(container) = root.as_container() else { return String::from("err: root not a container"); };
+            let name_ws = WString::from_utf8(child_name);
+            let Some(child) = container.child_by_name(&name_ws, false) else {
+                return format!("err: no child named '{child_name}'");
+            };
+            let Some(obj) = child.object2() else { return String::from("err: child has no avm2 object"); };
+            let mut activation = Avm2Activation::from_nothing(context);
+            let ns = activation.avm2().find_public_namespace();
+            let init = AvmString::new_utf8(activation.gc(), "Init");
+            let mn = Multiname::new(ns, init);
+            let label_s = AvmString::new_utf8(activation.gc(), label);
+            let args = [
+                Avm2Value::String(label_s),
+                Avm2Value::Number(id),
+                Avm2Value::Bool(checked),
+            ];
+            match Avm2Value::from(obj).call_property(&mn, FunctionArgs::from_slice(&args), &mut activation) {
+                Ok(ret) => format!("ok: {ret:?}"),
+                Err(e) => format!("err: call failed: {e:?}"),
+            }
+        })
+    }
+
+    pub fn call_init_slider(
+        &mut self,
+        child_name: &str,
+        label: &str,
+        id: f64,
+        min: i32,
+        max: i32,
+        current: i32,
+    ) -> String {
+        use crate::avm2::{
+            Activation as Avm2Activation, FunctionArgs, Multiname, Value as Avm2Value,
+        };
+        use crate::display_object::{TDisplayObject, TDisplayObjectContainer};
+        use crate::string::{AvmString, WString};
+        self.mutate_with_update_context(|context| {
+            let Some(root) = context.stage.root_clip() else { return String::from("err: no root_clip"); };
+            let Some(container) = root.as_container() else { return String::from("err: root not a container"); };
+            let name_ws = WString::from_utf8(child_name);
+            let Some(child) = container.child_by_name(&name_ws, false) else {
+                return format!("err: no child named '{child_name}'");
+            };
+            let Some(obj) = child.object2() else { return String::from("err: child has no avm2 object"); };
+            let mut activation = Avm2Activation::from_nothing(context);
+            let ns = activation.avm2().find_public_namespace();
+            let init = AvmString::new_utf8(activation.gc(), "Init");
+            let mn = Multiname::new(ns, init);
+            let label_s = AvmString::new_utf8(activation.gc(), label);
+            let args = [
+                Avm2Value::String(label_s),
+                Avm2Value::Number(id),
+                Avm2Value::Integer(min),
+                Avm2Value::Integer(max),
+                Avm2Value::Integer(current),
+            ];
+            match Avm2Value::from(obj).call_property(&mn, FunctionArgs::from_slice(&args), &mut activation) {
+                Ok(ret) => format!("ok: {ret:?}"),
+                Err(e) => format!("err: call failed: {e:?}"),
+            }
+        })
+    }
+
     pub fn call_init_on_named_child(
         &mut self,
         child_name: &str,
