@@ -1334,9 +1334,17 @@ impl Player {
             }
 
             // KeyPress events also take precedence over keyboard navigation.
-            // Note that keyboard navigation works only when the highlight is visible.
+            // Arrow-key nav and Enter/Space dispatch run whenever the
+            // tracker considers something actively focused - whether
+            // the highlight is visually drawn or just tracked.
+            // Requiring `is_visible()` here broke hosts that suppress
+            // Ruffle's yellow rectangle because the SWF paints its
+            // own focus art (LCE FJ_Slider_Outline / FJ_CheckBox_
+            // Outline): with the rectangle off, nav silently dropped
+            // every key. `is_active()` covers both visible and hidden
+            // active states.
             if !key_press_handled
-                && context.focus_tracker.highlight().is_visible()
+                && context.focus_tracker.highlight().is_active()
                 && let Some(focus) = context.focus_tracker.get()
             {
                 if matches!(

@@ -77,13 +77,14 @@ impl<'gc> FocusTracker<'gc> {
     }
 
     /// Toggle the host-side suppression flag. While true,
-    /// update_highlight always leaves highlight at Inactive no
-    /// matter what calculate_highlight would pick.
+    /// update_highlight downgrades highlight to ActiveHidden
+    /// instead of ActiveVisible. Rendering skips (is_visible()
+    /// stays false so render_highlight bails) but keyboard
+    /// navigation still runs (is_active() remains true and tracker
+    /// still knows which control has focus, so arrow-key nav and
+    /// Enter/Space presses route to the focused element).
     pub fn set_suppress_auto_highlight(&self, suppress: bool) {
         self.0.suppress_auto_highlight.set(suppress);
-        if suppress {
-            self.0.highlight.set(Highlight::Inactive);
-        }
     }
 
     pub fn highlight(&self) -> Highlight {
@@ -377,11 +378,22 @@ impl<'gc> FocusTracker<'gc> {
     }
 
     pub fn update_highlight(&self, context: &mut UpdateContext<'gc>) {
-        if self.0.suppress_auto_highlight.get() {
-            self.0.highlight.set(Highlight::Inactive);
-            return;
-        }
-        self.0.highlight.replace(self.calculate_highlight(context));
+        let computed = self.calculate_highlight(context);
+        // Host suppression: the authored SWF paints its own focus
+        // outline, so downgrade ActiveVisible to ActiveHidden.
+        // Rendering skips (is_visible() returns false for Hidden) but
+        // the tracker is still "active" from the keyboard-nav code's
+        // perspective, so arrow keys and Enter still route to the
+        // focused InteractiveObject.
+        let final_state = if self.0.suppress_auto_highlight.get() {
+            match computed {
+                Highlight::ActiveVisible => Highlight::ActiveHidden,
+                other => other,
+            }
+        } else {
+            computed
+        };
+        self.0.highlight.set(final_state);
     }
 
     fn calculate_highlight(self, context: &mut UpdateContext<'gc>) -> Highlight {
