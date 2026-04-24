@@ -2857,6 +2857,61 @@ impl Player {
         })
     }
 
+    /// Specialised helper for ToolTips1080.swf's SetToolTip method,
+    /// which has a 3-arg signature (int, string, bool) that
+    /// neither call_method_on_sibling_root (number-only) nor
+    /// call_init_on_sibling_child (label-id-only) covers. Mirrors
+    /// console's UIComponent_Tooltips::SetTooltipText path which
+    /// ends up calling this exact AS3 method (ToolTips.as:144).
+    pub fn call_set_tooltip(
+        &mut self,
+        depth: i32,
+        button_id: i32,
+        label: &str,
+        show: bool,
+    ) -> String {
+        use crate::avm2::{
+            Activation as Avm2Activation, FunctionArgs, Multiname, Value as Avm2Value,
+        };
+        use crate::display_object::{DisplayObject, TDisplayObject, TDisplayObjectContainer};
+        use crate::string::AvmString;
+        let label_owned = label.to_string();
+        self.mutate_with_update_context(|context| {
+            let stage_container: DisplayObject<'_> = context.stage.into();
+            let sibling = if let Some(stage) = stage_container.as_container() {
+                stage
+                    .iter_render_list()
+                    .find(|c| c.depth() == depth)
+            } else {
+                None
+            };
+            let Some(sibling) = sibling else {
+                return format!("err: no sibling at depth {depth}");
+            };
+            let Some(obj) = sibling.object2() else {
+                return String::from("err: sibling has no avm2 object");
+            };
+            let mut activation = Avm2Activation::from_nothing(context);
+            let ns = activation.avm2().find_public_namespace();
+            let method_avm = AvmString::new_utf8(activation.gc(), "SetToolTip");
+            let multiname = Multiname::new(ns, method_avm);
+            let label_avm = AvmString::new_utf8(activation.gc(), &label_owned);
+            let args = [
+                Avm2Value::Integer(button_id),
+                Avm2Value::String(label_avm),
+                Avm2Value::Bool(show),
+            ];
+            match Avm2Value::from(obj).call_property(
+                &multiname,
+                FunctionArgs::from_slice(&args),
+                &mut activation,
+            ) {
+                Ok(ret) => format!("ok: {ret:?}"),
+                Err(e) => format!("err: call failed: {e:?}"),
+            }
+        })
+    }
+
     /// Like `call_init_on_named_child`, but walks into the sibling
     /// SWF at the given stage depth instead of the root scene.
     /// Method shape is picked the same way (SetLabel = 1-string,
