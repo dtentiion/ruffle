@@ -216,11 +216,14 @@ impl<'gc> FocusTracker<'gc> {
         // event listeners sometimes reclaim focus back to the old
         // target - sometimes synchronously inside dispatch, but
         // often via a frame-script queued during focusIn that runs
-        // under the trailing run_actions. Navigate / set_by_key /
-        // set bump guard_depth for the duration of that whole flow;
-        // any set_internal call that lands while the guard is held
-        // gets dropped.
-        if self.0.suppress_auto_highlight.get() && self.0.guard_depth.get() > 0 {
+        // under the trailing run_actions. Each public-API entry
+        // (set / set_by_key / reset_focus) bumps guard_depth to 1
+        // for its own call then back to 0, so depth > 1 means a
+        // nested public call fired from inside our own dispatch
+        // window - i.e. a reclaim - and we drop it. depth == 1 is
+        // the legitimate outer call itself; letting that through
+        // is what actually moves the focus.
+        if self.0.suppress_auto_highlight.get() && self.0.guard_depth.get() > 1 {
             tracing::info!(
                 "Focus: dropping nested set_internal (host mode) new={:?}",
                 new
