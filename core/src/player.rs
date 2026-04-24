@@ -3347,6 +3347,41 @@ impl Player {
         })
     }
 
+    /// Call a single-number-arg method on the root SWF's document class.
+    /// Matches console's `IggyPlayerCallMethodRS(movie, path, name, 1,
+    /// [number])` shape (UIScene.cpp:1011) used for `SetFocus(id)` on
+    /// scene gainFocus - FJ_Document.SetFocus(-1) is the auto-focus
+    /// path that picks the authored `tabIndex == 1` child and fires
+    /// `handleInitFocus` through ExternalInterface.
+    pub fn call_root_method_number(&mut self, method_name: &str, arg: f64) -> String {
+        use crate::avm2::{
+            Activation as Avm2Activation, FunctionArgs, Multiname, Value as Avm2Value,
+        };
+        use crate::display_object::TDisplayObject;
+        use crate::string::AvmString;
+        self.mutate_with_update_context(|context| {
+            let Some(root) = context.stage.root_clip() else {
+                return String::from("err: no root_clip");
+            };
+            let Some(obj) = root.object2() else {
+                return String::from("err: root has no avm2 object");
+            };
+            let mut activation = Avm2Activation::from_nothing(context);
+            let ns = activation.avm2().find_public_namespace();
+            let method_avm = AvmString::new_utf8(activation.gc(), method_name);
+            let multiname = Multiname::new(ns, method_avm);
+            let args = [Avm2Value::Number(arg)];
+            match Avm2Value::from(obj).call_property(
+                &multiname,
+                FunctionArgs::from_slice(&args),
+                &mut activation,
+            ) {
+                Ok(ret) => format!("ok: {ret:?}"),
+                Err(e) => format!("err: call failed: {e:?}"),
+            }
+        })
+    }
+
     pub fn call_init_on_named_child(
         &mut self,
         child_name: &str,
