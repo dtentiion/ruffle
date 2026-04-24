@@ -29,6 +29,17 @@ pub struct FocusTrackerData<'gc> {
     // FJ_Slider_Outline / FJ_CheckBox_Outline children that paint a
     // yellow frame around the focused control already).
     suppress_auto_highlight: Cell<bool>,
+    // Re-entrancy guard. True while set_internal is dispatching
+    // focus handlers (AVM1 onSetFocus/onKillFocus, AVM2 focusIn/
+    // focusOut). If suppress_auto_highlight is also on (LCE host
+    // mode), any nested set_internal call triggered from inside an
+    // AS3 focus handler is dropped. Stops LCE's FJ_Slider from
+    // reclaiming focus on dpad-down between re-entries to a
+    // Settings sub-scene (first entry worked; re-entry bounced
+    // focus back to the previously-focused slider inside the same
+    // ~150us event-dispatch window because an AS3 handler was
+    // re-setting stage.focus).
+    in_focus_change: Cell<bool>,
 }
 
 #[derive(Copy, Clone)]
@@ -72,6 +83,7 @@ impl<'gc> FocusTracker<'gc> {
                 focus: Lock::new(None),
                 highlight: Cell::new(Highlight::Inactive),
                 suppress_auto_highlight: Cell::new(false),
+                in_focus_change: Cell::new(false),
             },
         ))
     }
@@ -166,6 +178,18 @@ impl<'gc> FocusTracker<'gc> {
         context: &mut UpdateContext<'gc>,
         run_actions: bool,
     ) {
+        // When a host (LCE iOS) is driving focus, its AS3 focus-
+        // event listeners sometimes call stage.focus = ... back,
+        // which would recurse through here. Drop nested calls so
+        // the original intent wins.
+        if self.0.suppress_auto_highlight.get() && self.0.in_focus_change.get() {
+            tracing::info!(
+                "Focus: dropping nested set_internal (host mode) new={:?}",
+                new
+            );
+            return;
+        }
+
         Self::roll_over(context, new);
 
         if run_actions {
@@ -205,6 +229,14 @@ impl<'gc> FocusTracker<'gc> {
             // The highlight always follows the focus.
             self.update_highlight(context);
 
+            // Arm the re-entrancy guard before any focus-handler
+            // dispatch. Any nested set_internal triggered from an
+            // AVM2 focusIn/focusOut listener (or AVM1 equivalent)
+            // runs with in_focus_change=true and gets dropped at
+            // the top of this method when the host opts in via
+            // suppress_auto_highlight.
+            self.0.in_focus_change.set(true);
+
             // AVM2's focus events shouldn't fire yet, as that only happens
             // after all of AVM1's focus handlers have been fired.
             handle_focus_change(old, false, new, |dobj| dobj.object1().is_some(), context);
@@ -230,6 +262,8 @@ impl<'gc> FocusTracker<'gc> {
             // Now we fire the AVM2 focus events.
             handle_focus_change(old, false, new, |dobj| dobj.object2().is_some(), context);
             handle_focus_change(new, true, old, |dobj| dobj.object2().is_some(), context);
+
+            self.0.in_focus_change.set(false);
 
             tracing::info!("Focus is now on {:?}", new);
         }
