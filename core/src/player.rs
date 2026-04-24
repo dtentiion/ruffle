@@ -2759,6 +2759,203 @@ impl Player {
         })
     }
 
+    /// Remove the stage sibling at the given depth. Used by the
+    /// dialog overlay path on dismiss to tear down the MessageBox
+    /// sibling so its AS3 stage-level listeners go away (console
+    /// equivalent is the scene destructor freeing the Iggy player).
+    /// Returns true if a sibling existed at that depth.
+    pub fn remove_sibling_at_depth(&mut self, depth: i32) -> bool {
+        use crate::display_object::{DisplayObject, TDisplayObject, TDisplayObjectContainer};
+        use std::cell::Cell;
+        let found = Cell::new(false);
+        self.mutate_with_update_context(|context| {
+            let stage_container: DisplayObject<'_> = context.stage.into();
+            let child = if let Some(stage) = stage_container.as_container() {
+                stage
+                    .iter_render_list()
+                    .find(|c| c.depth() == depth)
+            } else {
+                None
+            };
+            if let Some(child) = child {
+                // If stage focus is inside the sibling being
+                // removed, reset it first so the tracker doesn't
+                // end up pointing at an orphaned DisplayObject.
+                let tracker = context.focus_tracker;
+                if let Some(f) = tracker.get() {
+                    let focus_do = f.as_displayobject();
+                    let mut walk = Some(focus_do);
+                    let mut is_desc = false;
+                    while let Some(cur) = walk {
+                        if DisplayObject::ptr_eq(cur, child) {
+                            is_desc = true;
+                            break;
+                        }
+                        walk = cur.parent();
+                    }
+                    if is_desc {
+                        tracker.reset_focus(context);
+                    }
+                }
+                let mut stage = context.stage;
+                stage.remove_child(context, child);
+                found.set(true);
+            }
+        });
+        found.get()
+    }
+
+    /// Call a zero-or-more-number-arg AS3 method on the document
+    /// class of the SWF at the given stage depth. Used by the
+    /// dialog overlay path: MessageBox is loaded as a stage sibling
+    /// at e.g. depth 200 while the underlying scene stays at depth
+    /// 0, so calls targeting `context.stage.root_clip()` would hit
+    /// the wrong SWF.
+    pub fn call_method_on_sibling_root(
+        &mut self,
+        depth: i32,
+        method_name: &str,
+        args: &[f64],
+    ) -> String {
+        use crate::avm2::{
+            Activation as Avm2Activation, FunctionArgs, Multiname, Value as Avm2Value,
+        };
+        use crate::display_object::{DisplayObject, TDisplayObject, TDisplayObjectContainer};
+        use crate::string::AvmString;
+        let owned: Vec<f64> = args.to_vec();
+        self.mutate_with_update_context(|context| {
+            let stage_container: DisplayObject<'_> = context.stage.into();
+            let sibling = if let Some(stage) = stage_container.as_container() {
+                stage
+                    .iter_render_list()
+                    .find(|c| c.depth() == depth)
+            } else {
+                None
+            };
+            let Some(sibling) = sibling else {
+                return format!("err: no sibling at depth {depth}");
+            };
+            let Some(obj) = sibling.object2() else {
+                return String::from("err: sibling has no avm2 object");
+            };
+            let mut activation = Avm2Activation::from_nothing(context);
+            let ns = activation.avm2().find_public_namespace();
+            let method_avm = AvmString::new_utf8(activation.gc(), method_name);
+            let multiname = Multiname::new(ns, method_avm);
+            let avm_args: Vec<Avm2Value> = owned
+                .iter()
+                .map(|n| Avm2Value::Number(*n))
+                .collect();
+            match Avm2Value::from(obj).call_property(
+                &multiname,
+                FunctionArgs::from_slice(&avm_args),
+                &mut activation,
+            ) {
+                Ok(ret) => format!("ok: {ret:?}"),
+                Err(e) => format!("err: call failed: {e:?}"),
+            }
+        })
+    }
+
+    /// Like `call_init_on_named_child`, but walks into the sibling
+    /// SWF at the given stage depth instead of the root scene.
+    /// Method shape is picked the same way (SetLabel = 1-string,
+    /// ChangeState = 1-int, HideUntilInit = 0-arg, default = 2-arg
+    /// (label, id) matching FJ_Button.Init).
+    pub fn call_init_on_sibling_child(
+        &mut self,
+        depth: i32,
+        child_name: &str,
+        method_name: &str,
+        label: &str,
+        id: f64,
+    ) -> String {
+        use crate::avm2::{
+            Activation as Avm2Activation, FunctionArgs, Multiname, Value as Avm2Value,
+        };
+        use crate::display_object::{DisplayObject, TDisplayObject, TDisplayObjectContainer};
+        use crate::string::{AvmString, WString};
+        self.mutate_with_update_context(|context| {
+            let stage_container: DisplayObject<'_> = context.stage.into();
+            let sibling = if let Some(stage) = stage_container.as_container() {
+                stage
+                    .iter_render_list()
+                    .find(|c| c.depth() == depth)
+            } else {
+                None
+            };
+            let Some(sibling) = sibling else {
+                return format!("err: no sibling at depth {depth}");
+            };
+            let Some(container) = sibling.as_container() else {
+                return String::from("err: sibling not a container");
+            };
+            let name_ws = WString::from_utf8(child_name);
+            let Some(child) = container.child_by_name(&name_ws, false) else {
+                return format!("err: no child named '{child_name}' in sibling");
+            };
+            let Some(obj) = child.object2() else {
+                return String::from("err: child has no avm2 object");
+            };
+            let mut activation = Avm2Activation::from_nothing(context);
+            let ns = activation.avm2().find_public_namespace();
+            let method_avm = AvmString::new_utf8(activation.gc(), method_name);
+            let multiname = Multiname::new(ns, method_avm);
+            let label_avm = AvmString::new_utf8(activation.gc(), label);
+            let two_args = [Avm2Value::String(label_avm), Avm2Value::Number(id)];
+            let one_arg = [Avm2Value::String(label_avm)];
+            let int_arg = [Avm2Value::Integer(id as i32)];
+            let zero_args: [Avm2Value; 0] = [];
+            let args: &[Avm2Value] = match method_name {
+                "SetLabel" => &one_arg,
+                "ChangeState" | "EnableButton" => &int_arg,
+                "HideUntilInit" | "LostFocus" => &zero_args,
+                _ => &two_args,
+            };
+            match Avm2Value::from(obj).call_property(
+                &multiname,
+                FunctionArgs::from_slice(args),
+                &mut activation,
+            ) {
+                Ok(ret) => format!("ok: {ret:?}"),
+                Err(e) => format!("err: call failed: {e:?}"),
+            }
+        })
+    }
+
+    /// Set stage focus to a named direct child of the SWF at the
+    /// given stage depth. Used by the dialog overlay path to
+    /// transfer input focus into the MessageBox sibling when the
+    /// dialog opens.
+    pub fn set_focus_to_sibling_child(&mut self, depth: i32, child_name: &str) -> bool {
+        use crate::display_object::{DisplayObject, TDisplayObject, TDisplayObjectContainer};
+        self.mutate_with_update_context(|context| {
+            let stage_container: DisplayObject<'_> = context.stage.into();
+            let sibling = if let Some(stage) = stage_container.as_container() {
+                stage
+                    .iter_render_list()
+                    .find(|c| c.depth() == depth)
+            } else {
+                None
+            };
+            let Some(sibling) = sibling else { return false; };
+            let Some(container) = sibling.as_container() else { return false; };
+            let children: Vec<_> = container.iter_render_list().collect();
+            let mut target = None;
+            for child in children {
+                let name = child.name().map(|n| n.to_string()).unwrap_or_default();
+                if name == child_name {
+                    target = child.as_interactive();
+                    break;
+                }
+            }
+            let Some(io) = target else { return false; };
+            let tracker = context.focus_tracker;
+            tracker.set(Some(io), context);
+            true
+        })
+    }
+
     /// Instantiate an AS3 class (e.g. `Panorama`) that is bound via
     /// SymbolClass to a library character in one of the loaded SWFs,
     /// and attach the resulting DisplayObject as a direct child of the
