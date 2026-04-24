@@ -3379,6 +3379,44 @@ impl Player {
     /// scene gainFocus - FJ_Document.SetFocus(-1) is the auto-focus
     /// path that picks the authored `tabIndex == 1` child and fires
     /// `handleInitFocus` through ExternalInterface.
+    /// Generalised version of call_root_method_number for methods
+    /// that take multiple number args or none. Mirrors console's
+    /// IggyPlayerCallMethodRS with an IGGY_DATATYPE_number array.
+    /// Used for MessageBox's Init(count, focus) and AutoResize()
+    /// and anything else with that shape.
+    pub fn call_root_method_numbers(&mut self, method_name: &str, args: &[f64]) -> String {
+        use crate::avm2::{
+            Activation as Avm2Activation, FunctionArgs, Multiname, Value as Avm2Value,
+        };
+        use crate::display_object::TDisplayObject;
+        use crate::string::AvmString;
+        let owned: Vec<f64> = args.to_vec();
+        self.mutate_with_update_context(|context| {
+            let Some(root) = context.stage.root_clip() else {
+                return String::from("err: no root_clip");
+            };
+            let Some(obj) = root.object2() else {
+                return String::from("err: root has no avm2 object");
+            };
+            let mut activation = Avm2Activation::from_nothing(context);
+            let ns = activation.avm2().find_public_namespace();
+            let method_avm = AvmString::new_utf8(activation.gc(), method_name);
+            let multiname = Multiname::new(ns, method_avm);
+            let avm_args: Vec<Avm2Value> = owned
+                .iter()
+                .map(|n| Avm2Value::Number(*n))
+                .collect();
+            match Avm2Value::from(obj).call_property(
+                &multiname,
+                FunctionArgs::from_slice(&avm_args),
+                &mut activation,
+            ) {
+                Ok(ret) => format!("ok: {ret:?}"),
+                Err(e) => format!("err: call failed: {e:?}"),
+            }
+        })
+    }
+
     pub fn call_root_method_number(&mut self, method_name: &str, arg: f64) -> String {
         use crate::avm2::{
             Activation as Avm2Activation, FunctionArgs, Multiname, Value as Avm2Value,
