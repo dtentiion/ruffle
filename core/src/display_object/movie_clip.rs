@@ -2046,6 +2046,37 @@ impl<'gc> MovieClip<'gc> {
                         child.set_place_frame(params.frame);
                     }
                 }
+                (PlaceObjectAction::Modify, None, _)
+                    if params.place_object.class_name.is_some() =>
+                {
+                    // LCE-authored SWFs use `PlaceObject action=Modify` with
+                    // a `class_name` on alternate state frames of stateful
+                    // clips (FJ_CheckBox's Active_Selected /
+                    // Inactive_Selected etc.). The goto rewind phase clears
+                    // the depth before applying the target frame, so there
+                    // is no existing child for the Modify to mutate. Fall
+                    // back to the same class-name resolver run_place_object
+                    // uses: map the class to a character id and place it
+                    // as if Modify had been a Place.
+                    if let Some((src_movie, id)) =
+                        clip.resolve_place_by_class_name(context, &params.place_object)
+                    {
+                        if let Some(child) = clip.instantiate_child_from_movie(
+                            context,
+                            src_movie,
+                            id,
+                            params.depth(),
+                            &params.place_object,
+                        ) {
+                            child.set_place_frame(params.frame);
+                        }
+                    } else {
+                        tracing::error!(
+                            "goto: Modify with unresolvable class_name: {:?}",
+                            params.place_object
+                        );
+                    }
+                }
                 _ => {
                     tracing::error!(
                         "Unexpected PlaceObject during goto: {:?}",
