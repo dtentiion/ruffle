@@ -3454,6 +3454,43 @@ impl Player {
         })
     }
 
+    /// addNewItem(label, data) on an FJ_ButtonList_Menu child
+    /// (the 2-arg variant used by HowToPlay / Leaderboard / the
+    /// non-icon list scenes). Mirrors UIControl_ButtonList::addItem
+    /// (UIControl_ButtonList.cpp:96-112). For list classes that
+    /// take an icon name use `call_list_add_item` instead.
+    pub fn call_list_add_menu_item(
+        &mut self,
+        child_name: &str,
+        label: &str,
+        data: f64,
+    ) -> String {
+        use crate::avm2::{
+            Activation as Avm2Activation, FunctionArgs, Multiname, Value as Avm2Value,
+        };
+        use crate::display_object::{TDisplayObject, TDisplayObjectContainer};
+        use crate::string::{AvmString, WString};
+        self.mutate_with_update_context(|context| {
+            let Some(root) = context.stage.root_clip() else { return String::from("err: no root_clip"); };
+            let Some(container) = root.as_container() else { return String::from("err: root not a container"); };
+            let name_ws = WString::from_utf8(child_name);
+            let Some(child) = container.child_by_name(&name_ws, false) else {
+                return format!("err: no child named '{child_name}'");
+            };
+            let Some(obj) = child.object2() else { return String::from("err: child has no avm2 object"); };
+            let mut activation = Avm2Activation::from_nothing(context);
+            let ns = activation.avm2().find_public_namespace();
+            let method_avm = AvmString::new_utf8(activation.gc(), "addNewItem");
+            let multiname = Multiname::new(ns, method_avm);
+            let label_avm = AvmString::new_utf8(activation.gc(), label);
+            let args = [Avm2Value::String(label_avm), Avm2Value::Number(data)];
+            match Avm2Value::from(obj).call_property(&multiname, FunctionArgs::from_slice(&args), &mut activation) {
+                Ok(ret) => format!("ok: {ret:?}"),
+                Err(e) => format!("err: call failed: {e:?}"),
+            }
+        })
+    }
+
     /// removeAllItems() on an FJ_ButtonList child. Mirrors
     /// UIControl_ButtonList::clearList (UIControl_ButtonList.cpp:60-66)
     /// which calls AS3 removeAllItems with zero args.
