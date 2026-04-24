@@ -2938,6 +2938,32 @@ impl Player {
     /// completes during the headless transition burst. Everything
     /// else (panorama, logo, tooltips) freezes its Timeline so the
     /// scroll animation doesn't drift during those 500 ms.
+    /// Toggle the visibility of the stage child at a specific
+    /// depth. LCE puts scenery SWFs (Panorama, Logo, Tooltips) at
+    /// well-known negative / high depths as siblings of the scene
+    /// root, and each console scene's updateComponents() calls
+    /// UILayer::showComponent(eUIComponent_Logo / _Panorama, bool)
+    /// to opt them in or out per-scene (UILayer.cpp:544+).
+    pub fn set_xui_sibling_visible_at_depth(&mut self, depth: i32, visible: bool) -> bool {
+        use crate::display_object::{DisplayObject, TDisplayObject, TDisplayObjectContainer};
+        use std::cell::Cell;
+        let found = Cell::new(false);
+        self.mutate_with_update_context(|context| {
+            let stage_container: DisplayObject<'_> = context.stage.into();
+            if let Some(stage) = stage_container.as_container() {
+                let kids: Vec<_> = stage.iter_render_list().collect();
+                for child in kids {
+                    if child.depth() == depth {
+                        child.set_visible(context, visible);
+                        found.set(true);
+                        break;
+                    }
+                }
+            }
+        });
+        found.get()
+    }
+
     pub fn set_xui_siblings_playing(&mut self, playing: bool) {
         use crate::display_object::{DisplayObject, TDisplayObject, TDisplayObjectContainer};
         use std::cell::Cell;
