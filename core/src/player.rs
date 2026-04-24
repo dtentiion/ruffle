@@ -1364,7 +1364,22 @@ impl Player {
                     && let Some(direction) = NavigationDirection::from_key_code(*key_code)
                 {
                     let tracker = context.focus_tracker;
-                    tracker.navigate(context, direction);
+                    // When the host is driving focus (LCE iOS sets
+                    // suppress_auto_highlight to off-load the yellow
+                    // rect), the SWF also owns focus navigation via
+                    // its own stage-level KEY_DOWN listener reading
+                    // authored m_objNavUp/Down/Left/Right graphs
+                    // (FJ_Document.keyDownHandler). Ruffle's spatial
+                    // navigate would race that AS3 handler and can
+                    // disagree with the authored graph (e.g. slider
+                    // wrap Music -> Sound -> Music). Matches the
+                    // console path: UIScene::sendInputToMovie just
+                    // dispatches the raw key event to the SWF on
+                    // non-Windows platforms and lets the SWF handle
+                    // focus entirely.
+                    if !tracker.suppress_auto_highlight() {
+                        tracker.navigate(context, direction);
+                    }
                 }
             }
 

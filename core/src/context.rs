@@ -435,6 +435,34 @@ impl<'gc> UpdateContext<'gc> {
         self.sockets.close_all();
         self.timers.remove_all();
 
+        // Drop AS3 event listeners the outgoing SWF registered on
+        // the stage. Flash Player would clean these up when the SWF
+        // unloads (because the listener closures hold references to
+        // the old SWF's classes, which then become unreachable), but
+        // Ruffle's GC keeps the DispatchList alive since Stage itself
+        // persists. Without this, a host doing programmatic scene
+        // transitions (e.g. LCE iOS swapping Settings sub-scenes)
+        // accumulates a fresh set of listeners on every replace, and
+        // old FJ_Document / document-class keyDown handlers keep
+        // firing in parallel with the new scene's. Concretely: after
+        // one Settings Audio re-entry two keyDown handlers run per
+        // dpad-down and drive focus twice, producing a bounce.
+        {
+            use crate::avm2::globals::slots::flash_events_event_dispatcher as ed_slots;
+            use crate::avm2::{Object as Avm2Object, TObject as _};
+            use crate::display_object::TDisplayObject;
+            let stage_do: DisplayObject<'_> = self.stage.into();
+            if let Some(stage_avm2) = stage_do.object2() {
+                let stage_obj: Avm2Object<'_> = stage_avm2.into();
+                if let crate::avm2::Value::Object(dispatch_list) =
+                    stage_obj.get_slot(ed_slots::DISPATCH_LIST)
+                    && let Some(mut dispatch) = dispatch_list.as_dispatch_mut(self.gc())
+                {
+                    dispatch.clear_all();
+                }
+            }
+        }
+
         self.set_root_movie(movie);
     }
 

@@ -254,6 +254,17 @@ impl<'gc> DispatchList<'gc> {
         }
     }
 
+    /// Drop every registered handler for every event type.
+    ///
+    /// Used by `replace_root_movie` to wipe AS3 listeners the outgoing
+    /// SWF attached to the stage. Without this, closures from the old
+    /// SWF's classes stay alive (e.g. LCE's FJ_Document stage-level
+    /// KEY_DOWN listener) and fire in parallel with the new SWF's
+    /// listeners on every key press, causing double focus moves.
+    pub fn clear_all(&mut self) {
+        self.0.clear();
+    }
+
     /// Determine if there are any event listeners in this dispatch list.
     pub fn has_event_listener(&self, event: AvmString<'gc>) -> bool {
         if let Some(event_sheaf) = self.get_event(event) {

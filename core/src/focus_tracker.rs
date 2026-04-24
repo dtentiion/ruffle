@@ -29,17 +29,6 @@ pub struct FocusTrackerData<'gc> {
     // FJ_Slider_Outline / FJ_CheckBox_Outline children that paint a
     // yellow frame around the focused control already).
     suppress_auto_highlight: Cell<bool>,
-    // Re-entrancy guard depth. Non-zero while a public focus API
-    // (navigate / set_by_key / set) is mid-flight AND its trailing
-    // queued-action processing is still draining. When
-    // suppress_auto_highlight is also on (LCE host mode), any
-    // set_internal call that fires while this is non-zero is
-    // dropped. Stops LCE's FJ_Slider from reclaiming focus on
-    // dpad-down between re-entries to a Settings sub-scene: the
-    // reclaim was landing via a frame-script queued from inside
-    // an AVM2 focusIn listener, not as a direct nested call, so
-    // the guard has to straddle the post-dispatch run_actions too.
-    guard_depth: Cell<u32>,
 }
 
 #[derive(Copy, Clone)]
@@ -83,7 +72,6 @@ impl<'gc> FocusTracker<'gc> {
                 focus: Lock::new(None),
                 highlight: Cell::new(Highlight::Inactive),
                 suppress_auto_highlight: Cell::new(false),
-                guard_depth: Cell::new(0),
             },
         ))
     }
@@ -97,6 +85,14 @@ impl<'gc> FocusTracker<'gc> {
     /// Enter/Space presses route to the focused element).
     pub fn set_suppress_auto_highlight(&self, suppress: bool) {
         self.0.suppress_auto_highlight.set(suppress);
+    }
+
+    /// Whether host-driven focus mode is active. Callers use this
+    /// to gate Ruffle-owned focus behaviour that the SWF also
+    /// implements (spatial arrow-key navigation when an authored
+    /// m_objNav graph already exists, for example).
+    pub fn suppress_auto_highlight(&self) -> bool {
+        self.0.suppress_auto_highlight.get()
     }
 
     pub fn highlight(&self) -> Highlight {
@@ -119,35 +115,13 @@ impl<'gc> FocusTracker<'gc> {
 
     /// Set the focus programmatically.
     pub fn set(&self, new: Option<InteractiveObject<'gc>>, context: &mut UpdateContext<'gc>) {
-        // Arm the host-mode reclaim guard for the whole flow:
-        // set_internal dispatch + the frame-scripts that run after.
-        // Without this, a focusIn listener that queues `stage.focus
-        // = oldTarget` via an AS3 frame script can land after our
-        // dispatch finishes and steal focus right back.
-        let armed = self.0.suppress_auto_highlight.get();
-        if armed {
-            self.0.guard_depth.set(self.0.guard_depth.get() + 1);
-        }
         self.set_internal(new, context, false);
         self.update_edittext_selection();
-        if armed {
-            // Drain any queued focus-reclaim actions under guard.
-            Player::run_actions(context);
-            self.0.guard_depth.set(self.0.guard_depth.get() - 1);
-        }
     }
 
     /// Reset the focus programmatically.
     pub fn reset_focus(&self, context: &mut UpdateContext<'gc>) {
-        let armed = self.0.suppress_auto_highlight.get();
-        if armed {
-            self.0.guard_depth.set(self.0.guard_depth.get() + 1);
-        }
         self.set_internal(None, context, true);
-        if armed {
-            Player::run_actions(context);
-            self.0.guard_depth.set(self.0.guard_depth.get() - 1);
-        }
     }
 
     /// Set the focus and acknowledge that this change was caused by a pointer device.
@@ -190,20 +164,8 @@ impl<'gc> FocusTracker<'gc> {
             return;
         }
 
-        // See `set` for why the guard also spans run_actions: LCE's
-        // FJ_Slider reclaim lands via a queued frame-script, not a
-        // direct recursive set, so dropping the guard right after
-        // set_internal isn't enough.
-        let armed = self.0.suppress_auto_highlight.get();
-        if armed {
-            self.0.guard_depth.set(self.0.guard_depth.get() + 1);
-        }
         self.set_internal(new, context, true);
         self.update_edittext_selection();
-        if armed {
-            Player::run_actions(context);
-            self.0.guard_depth.set(self.0.guard_depth.get() - 1);
-        }
     }
 
     fn set_internal(
@@ -212,25 +174,6 @@ impl<'gc> FocusTracker<'gc> {
         context: &mut UpdateContext<'gc>,
         run_actions: bool,
     ) {
-        // When a host (LCE iOS) is driving focus, its AS3 focus-
-        // event listeners sometimes reclaim focus back to the old
-        // target - sometimes synchronously inside dispatch, but
-        // often via a frame-script queued during focusIn that runs
-        // under the trailing run_actions. Each public-API entry
-        // (set / set_by_key / reset_focus) bumps guard_depth to 1
-        // for its own call then back to 0, so depth > 1 means a
-        // nested public call fired from inside our own dispatch
-        // window - i.e. a reclaim - and we drop it. depth == 1 is
-        // the legitimate outer call itself; letting that through
-        // is what actually moves the focus.
-        if self.0.suppress_auto_highlight.get() && self.0.guard_depth.get() > 1 {
-            tracing::info!(
-                "Focus: dropping nested set_internal (host mode) new={:?}",
-                new
-            );
-            return;
-        }
-
         Self::roll_over(context, new);
 
         if run_actions {
