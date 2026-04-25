@@ -46,7 +46,7 @@ use crate::avm1::Activation;
 use crate::display_object::bitmap::BitmapWeak;
 pub use crate::display_object::container::{
     DisplayObjectContainer, TDisplayObjectContainer, dispatch_added_event_only,
-    dispatch_added_to_stage_event_only,
+    dispatch_added_to_stage_event, dispatch_added_to_stage_event_only,
 };
 pub use avm1_button::{Avm1Button, ButtonState, ButtonTracking};
 pub use avm2_button::Avm2Button;

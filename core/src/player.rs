@@ -2759,6 +2759,72 @@ impl Player {
         })
     }
 
+    /// Wipe every AVM2 event listener attached to the Stage
+    /// object. Used by the dialog overlay path: the underlying
+    /// scene's FJ_Document and the dialog's FJ_Document both
+    /// register stage-level KEY_DOWN listeners, and their bail-
+    /// check is by name (m_this.getChildByName(focused.name)),
+    /// so name collisions between MessageBox's Button0..3 and
+    /// MainMenu / Settings's Button0..6 cause both handlers to
+    /// navigate independently. Clearing the DispatchList lets the
+    /// host control which listener gets re-attached: pair this
+    /// with redispatch_added_to_stage_on_root_or_sibling to bring
+    /// back exactly one document's listeners.
+    pub fn clear_stage_dispatch_list(&mut self) -> bool {
+        use crate::avm2::globals::slots::flash_events_event_dispatcher as ed_slots;
+        use crate::avm2::{Object as Avm2Object, TObject as _};
+        use crate::display_object::TDisplayObject;
+        let cleared = std::cell::Cell::new(false);
+        self.mutate_with_update_context(|context| {
+            let stage_do: DisplayObject<'_> = context.stage.into();
+            if let Some(stage_avm2) = stage_do.object2() {
+                let stage_obj: Avm2Object<'_> = stage_avm2.into();
+                if let crate::avm2::Value::Object(dispatch_list) =
+                    stage_obj.get_slot(ed_slots::DISPATCH_LIST)
+                    && let Some(mut dispatch) = dispatch_list.as_dispatch_mut(context.gc())
+                {
+                    dispatch.clear_all();
+                    cleared.set(true);
+                }
+            }
+        });
+        cleared.get()
+    }
+
+    /// Re-fire the AVM2 `addedToStage` event on a target. LCE's
+    /// FJ_Document registers its stage-level KEY_DOWN listener
+    /// inside its own `init` handler, which is wired to ADDED_TO_
+    /// STAGE. After clear_stage_dispatch_list nukes every listener
+    /// on the stage, calling this with target = root_clip()
+    /// re-registers the underlying scene's listeners; calling it
+    /// with target = sibling re-registers the dialog's. Combine
+    /// to switch which document owns input without removing or
+    /// reloading the scene root itself.
+    ///
+    /// `target_depth` selects the stage child. -1 means depth 0
+    /// (the root scene); any other value matches the depth of a
+    /// sibling.
+    pub fn redispatch_added_to_stage(&mut self, target_depth: i32) -> bool {
+        use crate::display_object::dispatch_added_to_stage_event;
+        use crate::display_object::{TDisplayObject, TDisplayObjectContainer};
+        let dispatched = std::cell::Cell::new(false);
+        self.mutate_with_update_context(|context| {
+            let target = if target_depth == -1 || target_depth == 0 {
+                context.stage.root_clip()
+            } else {
+                let stage_do: DisplayObject<'_> = context.stage.into();
+                stage_do
+                    .as_container()
+                    .and_then(|c| c.iter_render_list().find(|child| child.depth() == target_depth))
+            };
+            if let Some(t) = target {
+                dispatch_added_to_stage_event(t, context);
+                dispatched.set(true);
+            }
+        });
+        dispatched.get()
+    }
+
     /// Remove the stage sibling at the given depth. Used by the
     /// dialog overlay path on dismiss to tear down the MessageBox
     /// sibling so its AS3 stage-level listeners go away (console
