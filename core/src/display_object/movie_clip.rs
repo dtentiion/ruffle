@@ -4854,6 +4854,27 @@ impl<'gc, 'a> MovieClip<'gc> {
         let name_wstr = ruffle_wstr::from_utf8_bytes(decoded.as_bytes());
         let decoded_log = decoded.clone().into_owned();
 
+        // XUI bitmap registry wins over the AS3 domain. Console LCE
+        // stores low-res placeholder tiles for classes like
+        // Panorama_Background_S inside skin SWFs (platformskinHD etc.)
+        // AND higher-res overrides as external PNGs keyed in
+        // skin_Minecraft.xui. The host registers those PNGs via
+        // Player::register_xui_bitmap. Picking the SWF-internal
+        // char_id would render the ugly placeholder (the XUI override
+        // is the shipping art). Check the registry first so external
+        // PNGs always win over drain-time class bindings.
+        if let Some(entry) = crate::tag_utils::xui_bitmap_lookup(&decoded_log) {
+            tracing::info!(
+                "resolve_place_by_class_name: XUI override {} -> {:?}#{} scale={}x{}",
+                decoded_log,
+                entry.movie.url(),
+                entry.char_id,
+                entry.scale_x,
+                entry.scale_y,
+            );
+            return Some((entry.movie, entry.char_id));
+        }
+
         let domain = {
             let lib = match context.library.library_for_movie(movie.clone()) {
                 Some(l) => l,
