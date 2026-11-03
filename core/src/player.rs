@@ -283,6 +283,14 @@ enum RunState {
     Stepping,
 }
 
+/// Argument for `Player::call_method_on_child_path`.
+#[derive(Clone, Debug)]
+pub enum HostCallArg {
+    Number(f64),
+    Bool(bool),
+    Str(String),
+}
+
 pub struct Player {
     /// The version of the player we're emulating.
     ///
@@ -3954,6 +3962,80 @@ impl Player {
                 Ok(ret) => format!("ok: {ret:?}"),
                 Err(e) => format!("err: call failed: {e:?}"),
             }
+        })
+    }
+
+    /// Calls `method_name(args)` on the object at a dotted path from the
+    /// root clip ("MainPanel.GameName"), like IggyPlayerCallMethodRS with
+    /// a value path. An empty path calls on the root itself.
+    pub fn call_method_on_child_path(
+        &mut self,
+        path: &str,
+        method_name: &str,
+        args: &[HostCallArg],
+    ) -> String {
+        use crate::avm2::{
+            Activation as Avm2Activation, FunctionArgs, Multiname, Value as Avm2Value,
+        };
+        use crate::display_object::{TDisplayObject, TDisplayObjectContainer};
+        use crate::string::{AvmString, WString};
+        self.mutate_with_update_context(|context| {
+            let Some(mut node) = context.stage.root_clip() else {
+                return String::from("err: no root_clip");
+            };
+            for seg in path.split('.').filter(|s| !s.is_empty()) {
+                let Some(container) = node.as_container() else {
+                    return format!("err: parent of '{seg}' is not a container");
+                };
+                let Some(child) = container.child_by_name(&WString::from_utf8(seg), false) else {
+                    return format!("err: no child '{seg}' in '{path}'");
+                };
+                node = child;
+            }
+            let Some(obj) = node.object2() else {
+                return String::from("err: target has no avm2 object");
+            };
+            let mut activation = Avm2Activation::from_nothing(context);
+            let ns = activation.avm2().find_public_namespace();
+            let method_avm = AvmString::new_utf8(activation.gc(), method_name);
+            let multiname = Multiname::new(ns, method_avm);
+            let avm_args: Vec<Avm2Value> = args
+                .iter()
+                .map(|a| match a {
+                    HostCallArg::Number(n) => Avm2Value::Number(*n),
+                    HostCallArg::Bool(b) => Avm2Value::Bool(*b),
+                    HostCallArg::Str(s) => {
+                        Avm2Value::String(AvmString::new_utf8(activation.gc(), s))
+                    }
+                })
+                .collect();
+            match Avm2Value::from(obj).call_property(
+                &multiname,
+                FunctionArgs::from_slice(&avm_args),
+                &mut activation,
+            ) {
+                Ok(ret) => format!("ok: {ret:?}"),
+                Err(e) => format!("err: call failed: {e:?}"),
+            }
+        })
+    }
+
+    /// Show or hide the display object at a dotted path from the root
+    /// clip. Same as UIControl::setVisible on console.
+    pub fn set_child_path_visible(&mut self, path: &str, visible: bool) -> bool {
+        use crate::display_object::{TDisplayObject, TDisplayObjectContainer};
+        use crate::string::WString;
+        self.mutate_with_update_context(|context| {
+            let Some(mut node) = context.stage.root_clip() else { return false; };
+            for seg in path.split('.').filter(|s| !s.is_empty()) {
+                let Some(container) = node.as_container() else { return false; };
+                let Some(child) = container.child_by_name(&WString::from_utf8(seg), false) else {
+                    return false;
+                };
+                node = child;
+            }
+            node.set_visible(context, visible);
+            true
         })
     }
 
