@@ -545,8 +545,11 @@ impl<'gc> TDisplayObject<'gc> for Bitmap<'gc> {
             });
         }
 
+        // Iggy filters imported XUI textures (the menu panorama tiles) even
+        // though the AS3 Bitmap ctor leaves smoothing off for timeline bitmaps
+        let smoothing = self.0.smoothing.get() || self.0.xui_origin.get();
         self.0.bitmap_data.get().render(
-            self.0.smoothing.get(),
+            smoothing,
             context,
             self.0.pixel_snapping.get(),
         );
