@@ -182,6 +182,68 @@ impl<'a, 'gc> Iterator for FunctionArgsIter<'a, 'gc> {
 /// It is a panicking logic error to attempt to execute user code while any
 /// reachable object is currently under a write lock.
 ///
+/// Iggy runs `IggyFunctions.setTextureForBitmap(bitmap, name)` natively,
+/// swapping the bitmap's texture for one the host registered with
+/// registerSubstitutionTexture. The SWFs only ship a stub, so do the swap
+/// here from the host-registered XUI bitmaps. It's the only IggyFunctions
+/// static that takes a Bitmap first, which is how it's picked out.
+fn iggy_set_texture_for_bitmap<'gc>(
+    receiver: Value<'gc>,
+    arguments: &FunctionArgs<'_, 'gc>,
+    activation: &mut Activation<'_, 'gc>,
+) -> Option<Value<'gc>> {
+    use crate::bitmap::bitmap_data::{BitmapData, Color};
+    use crate::character::Character;
+    use crate::display_object::TDisplayObject;
+    use ruffle_render::bitmap::BitmapFormat;
+
+    let class = receiver.as_object()?.as_class_object()?;
+    if &*class.inner_class_definition().name().local_name() != b"IggyFunctions" {
+        return None;
+    }
+    if arguments.len() < 2 {
+        return None;
+    }
+    let target = arguments.get_at(0).as_object()?.as_display_object()?;
+    let bitmap = target.as_bitmap()?;
+
+    let name = match arguments.get_at(1) {
+        Value::String(s) => s.to_utf8_lossy().into_owned(),
+        _ => return Some(Value::Undefined),
+    };
+    let Some(entry) = crate::tag_utils::xui_bitmap_lookup(&name) else {
+        tracing::warn!("setTextureForBitmap: no texture registered as '{name}'");
+        return Some(Value::Undefined);
+    };
+    let character = activation
+        .context
+        .library
+        .library_for_movie(entry.movie.clone())
+        .and_then(|lib| lib.character_by_id(entry.char_id));
+    let Some(Character::Bitmap(source)) = character else {
+        return Some(Value::Undefined);
+    };
+    let Ok(decoded) = source.compressed().decode() else {
+        return Some(Value::Undefined);
+    };
+    let transparency = matches!(decoded.format(), BitmapFormat::Rgba);
+    let pixels: Vec<_> = decoded.as_colors().map(Color::from).collect();
+    let bitmap_data = BitmapData::new_with_pixels(
+        activation.gc(),
+        decoded.width(),
+        decoded.height(),
+        transparency,
+        pixels,
+    );
+
+    // The substituted texture fills the bitmap's existing bounds
+    let (width, height) = (target.width(), target.height());
+    bitmap.set_bitmap_data(activation.context, bitmap_data);
+    target.set_width(activation.context, width);
+    target.set_height(activation.context, height);
+    Some(Value::Undefined)
+}
+
 /// Passed-in arguments will be conformed to the set of method parameters
 /// declared on the function.
 ///
@@ -196,6 +258,10 @@ pub fn exec<'gc>(
     activation: &mut Activation<'_, 'gc>,
     callee: Option<FunctionObject<'gc>>,
 ) -> Result<Value<'gc>, Error<'gc>> {
+    if let Some(ret) = iggy_set_texture_for_bitmap(receiver, &arguments, activation) {
+        return Ok(ret);
+    }
+
     let mc = activation.gc();
 
     let caller_dxns = activation.default_xml_namespace();
