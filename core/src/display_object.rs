@@ -941,6 +941,14 @@ pub fn render_base<'gc>(
         return;
     }
 
+    // Iggy doesn't draw objects named iggy_<name>, the game draws into
+    // them through its custom draw callback instead
+    if let Some(name) = this.name() {
+        if name.starts_with(crate::string::WStr::from_units(b"iggy_")) {
+            return;
+        }
+    }
+
     if options.apply_transform {
         let transform = this.base().transform(options.apply_matrix);
         context.transform_stack.push(&transform);
