@@ -89,7 +89,16 @@ impl SwapChainTarget {
             height,
             present_mode: wgpu::PresentMode::Fifo,
             desired_maximum_frame_latency: 2,
-            alpha_mode: capabilities.alpha_modes[0],
+            // Non-opaque when the platform allows it, so a host can layer
+            // this surface over its own rendering
+            alpha_mode: if capabilities
+                .alpha_modes
+                .contains(&wgpu::CompositeAlphaMode::PostMultiplied)
+            {
+                wgpu::CompositeAlphaMode::PostMultiplied
+            } else {
+                capabilities.alpha_modes[0]
+            },
             view_formats: vec![format],
         };
         surface.configure(device, &surface_config);
