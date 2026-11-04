@@ -4039,6 +4039,51 @@ impl Player {
         })
     }
 
+    /// Iggy hands objects named `iggy_<name>` to the game to draw into
+    /// (UIScene::customDraw gets `<name>`). This lists the visible ones with
+    /// their rectangle in viewport pixels, x0 y0 x1 y1.
+    pub fn custom_draw_regions(&mut self) -> Vec<(String, [f32; 4])> {
+        use crate::display_object::BoundsMode;
+        self.mutate_with_update_context(|context| {
+            let mut out = Vec::new();
+            let Some(root) = context.stage.root_clip() else {
+                return out;
+            };
+            let view = context.stage.view_matrix();
+            let mut stack = vec![root];
+            while let Some(node) = stack.pop() {
+                if !node.visible() {
+                    continue;
+                }
+                if let Some(name) = node.name() {
+                    let name = name.to_utf8_lossy().to_string();
+                    if let Some(region) = name.strip_prefix("iggy_") {
+                        let bounds = node.world_bounds(BoundsMode::Engine);
+                        if bounds.is_valid() {
+                            let p0 = view * Point::new(bounds.x_min, bounds.y_min);
+                            let p1 = view * Point::new(bounds.x_max, bounds.y_max);
+                            out.push((
+                                region.to_string(),
+                                [
+                                    p0.x.to_pixels() as f32,
+                                    p0.y.to_pixels() as f32,
+                                    p1.x.to_pixels() as f32,
+                                    p1.y.to_pixels() as f32,
+                                ],
+                            ));
+                        }
+                    }
+                }
+                if let Some(container) = node.as_container() {
+                    for child in container.iter_render_list() {
+                        stack.push(child);
+                    }
+                }
+            }
+            out
+        })
+    }
+
     pub fn fetch(
         &self,
         mut request: Request,
