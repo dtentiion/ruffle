@@ -4742,6 +4742,11 @@ impl<'gc, 'a> MovieClip<'gc> {
                     let movie = self.movie();
                     let encoding = swf::SwfStr::encoding_for_version(movie.version());
                     let decoded = class_name_swf.to_str_lossy(encoding);
+                    if let Some(bitmap) =
+                        self.child_by_depth(depth).and_then(|c| c.as_bitmap())
+                    {
+                        bitmap.set_class_import(true);
+                    }
                     if let Some(entry) =
                         crate::tag_utils::xui_bitmap_lookup(decoded.as_ref())
                     {
