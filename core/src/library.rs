@@ -82,16 +82,17 @@ impl<'gc> Avm2ClassRegistry<'gc> {
     }
 
     /// Stash a SymbolClass entry from an imported SWF by class name so
-    /// the importer's resolver can pick it up later.
+    /// the importer's resolver can pick it up later. The latest import of
+    /// a name wins: every root movie loads its own copy of the libraries
+    /// it imports, bound to classes in its own domain, and an earlier
+    /// root's copy would hand out characters bound to that root's classes.
     pub fn register_pending_imported_symbol(
         &mut self,
         class_name: crate::string::WString,
         movie: Arc<SwfMovie>,
         symbol: CharacterId,
     ) {
-        self.pending_imported_symbols
-            .entry(class_name)
-            .or_insert((movie, symbol));
+        self.pending_imported_symbols.insert(class_name, (movie, symbol));
     }
 
     /// Look up a pending imported SymbolClass entry by class name.
