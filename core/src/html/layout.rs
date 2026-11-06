@@ -1,14 +1,16 @@
 //! Layout box structure
 
+use crate::character::{BitmapCharacter, Character};
 use crate::context::UpdateContext;
 use crate::drawing::Drawing;
 use crate::font::{DefaultFont, EvalParameters, Font, FontLike, FontSet, FontType};
 use crate::html::dimensions::{BoxBounds, Position, Size};
-use crate::html::text_format::{FormatSpans, TextFormat, TextSpan};
+use crate::html::text_format::{FormatSpans, TextFormat, TextSpan, TextSpanImage};
 use crate::html::wrap_line;
 use crate::string::WStr;
 use crate::tag_utils::SwfMovie;
-use gc_arena::Collect;
+use gc_arena::{Collect, Gc};
+use ruffle_render::bitmap::BitmapHandle;
 use std::cmp::{Ordering, max, min};
 use std::fmt::{Debug, Formatter};
 use std::mem;
@@ -150,6 +152,11 @@ impl<'a, 'gc> LayoutContext<'a, 'gc> {
         let font_set = self.resolve_font(context, span);
         self.font_set = Some(font_set);
         self.newspan(span);
+
+        if let Some(image) = &span.image {
+            self.lay_out_images(context, span_start, span_text.len(), span, image);
+            return;
+        }
 
         let params = EvalParameters::from_span(span);
 
@@ -299,14 +306,16 @@ impl<'a, 'gc> LayoutContext<'a, 'gc> {
         let mut line_size_bounds = None;
         let mut box_count: i32 = 0;
         for linebox in self.boxes.iter_mut() {
-            let (text, _tf, font_set, params, _color) =
-                linebox.as_renderable_text(self.text).expect("text");
-
-            // Flash ignores trailing spaces when aligning lines, so should we
-            if self.movie.version() >= 8 && self.current_line_span.align != swf::TextAlign::Left {
-                linebox.bounds = linebox
-                    .bounds
-                    .with_width(font_set.measure(text.trim_end(), params));
+            if let Some((text, _tf, font_set, params, _color)) =
+                linebox.as_renderable_text(self.text)
+            {
+                // Flash ignores trailing spaces when aligning lines, so should we
+                if self.movie.version() >= 8 && self.current_line_span.align != swf::TextAlign::Left
+                {
+                    linebox.bounds = linebox
+                        .bounds
+                        .with_width(font_set.measure(text.trim_end(), params));
+                }
             }
 
             Self::extend_bounds(&mut line_size_bounds, linebox.bounds);
@@ -347,7 +356,7 @@ impl<'a, 'gc> LayoutContext<'a, 'gc> {
 
         box_count = 0;
         for layout_box in self.boxes.iter_mut() {
-            if layout_box.is_text_box() {
+            if layout_box.is_text_box() || layout_box.is_image() {
                 let position = Position::from((
                     left_adjustment + align_adjustment + (interim_adjustment * box_count),
                     baseline_adjustment,
@@ -390,7 +399,7 @@ impl<'a, 'gc> LayoutContext<'a, 'gc> {
         let start = first_box.start();
         let bounds = boxes
             .iter()
-            .filter(|b| b.is_text_box())
+            .filter(|b| b.is_text_box() || b.is_image())
             .fold(first_box.bounds, |bounds, b| bounds + b.bounds);
 
         // Update last line's end position to take into account the delimiter.
@@ -642,6 +651,132 @@ impl<'a, 'gc> LayoutContext<'a, 'gc> {
             );
             new_empty_font(context, span, self.font_type)
         }
+    }
+
+    /// Lay out the images of an `<img>` span, one per character. Like Iggy,
+    /// they sit inline and take up their width on the line. `align="middle"`
+    /// centres them on the line's text, otherwise they sit on the baseline.
+    fn lay_out_images(
+        &mut self,
+        context: &mut UpdateContext<'gc>,
+        start: usize,
+        count: usize,
+        span: &TextSpan,
+        image: &TextSpanImage,
+    ) {
+        let bitmap = self.resolve_image(context, &image.src);
+        let (natural_w, natural_h) = bitmap
+            .as_ref()
+            .map(|(_, w, h)| (*w as f64, *h as f64))
+            .unwrap_or((0.0, 0.0));
+        let width = Twips::from_pixels(image.width.unwrap_or(natural_w));
+        let height = Twips::from_pixels(image.height.unwrap_or(natural_h));
+
+        for i in 0..count {
+            let position = start + i;
+
+            if self.is_word_wrap && !self.is_start_of_line() {
+                let (max_width, offset) = self.wrap_dimensions(span);
+                if offset + width > max_width {
+                    self.newline(context, position, span, false);
+                }
+            }
+
+            let metrics = self.font_set.expect("image span has a font").metrics();
+            let params = EvalParameters::from_span(span);
+            let ascent = metrics.ascent(params.height());
+            let descent = metrics.descent(params.height());
+            let (above, below) = if image.align_middle {
+                let above = (ascent - descent) / 2 + height / 2;
+                (above, height - above)
+            } else {
+                (height, Twips::ZERO)
+            };
+            self.max_ascent = self.max_ascent.max(above);
+            self.max_descent = self.max_descent.max(below);
+
+            let mut new_box = LayoutBox::from_image(position, bitmap.clone());
+            new_box.bounds = BoxBounds::from_position_and_size(
+                self.cursor - (Twips::ZERO, above).into(),
+                Size::from((width, height)),
+            );
+            self.cursor += (width, Twips::ZERO).into();
+            self.append_box(new_box);
+        }
+    }
+
+    /// Find the bitmap an `<img>` names: a texture the host registered, then
+    /// a bitmap symbol from an imported skin, then a class in this movie.
+    fn resolve_image(
+        &self,
+        context: &mut UpdateContext<'gc>,
+        src: &WStr,
+    ) -> Option<(BitmapHandle, u32, u32)> {
+        let name = src.to_utf8_lossy();
+        let symbol = crate::tag_utils::xui_bitmap_lookup(&name).map(|e| (e.movie, e.char_id));
+        let mut bitmap = Self::bitmap_symbol(context, symbol);
+        if bitmap.is_none() {
+            let symbol = context
+                .library
+                .avm2_class_registry()
+                .pending_imported_symbol(src);
+            bitmap = Self::bitmap_symbol(context, symbol);
+        }
+        if bitmap.is_none() {
+            let symbol = self.class_symbol(context, src);
+            bitmap = Self::bitmap_symbol(context, symbol);
+        }
+        let Some(bitmap) = bitmap else {
+            tracing::warn!("<img>: no bitmap for {}", name);
+            return None;
+        };
+        let size = bitmap.compressed().size();
+        match bitmap.bitmap_handle(context.renderer) {
+            Ok(handle) => Some((handle, size.width as u32, size.height as u32)),
+            Err(e) => {
+                tracing::warn!("<img>: could not upload {}: {:?}", name, e);
+                None
+            }
+        }
+    }
+
+    fn bitmap_symbol(
+        context: &UpdateContext<'gc>,
+        symbol: Option<(Arc<SwfMovie>, swf::CharacterId)>,
+    ) -> Option<Gc<'gc, BitmapCharacter<'gc>>> {
+        let (movie, id) = symbol?;
+        match context
+            .library
+            .library_for_movie(movie)?
+            .character_by_id(id)?
+        {
+            Character::Bitmap(bitmap) => Some(bitmap),
+            _ => None,
+        }
+    }
+
+    /// The symbol bound to an AS3 class of this movie's domain.
+    fn class_symbol(
+        &self,
+        context: &mut UpdateContext<'gc>,
+        class_name: &WStr,
+    ) -> Option<(Arc<SwfMovie>, swf::CharacterId)> {
+        let domain = context
+            .library
+            .library_for_movie(self.movie.clone())?
+            .try_avm2_domain()?;
+        let mut activation = crate::avm2::Activation::from_nothing(context);
+        let name = crate::string::AvmString::new(activation.gc(), class_name);
+        let class = domain
+            .get_defined_value_handling_vector(&mut activation, name)
+            .ok()?
+            .as_object()?
+            .as_class_object()?;
+        activation
+            .context
+            .library
+            .avm2_class_registry()
+            .class_symbol(class.inner_class_definition())
     }
 
     /// Append text to the current line of the ongoing layout operation.
@@ -1198,6 +1333,19 @@ pub enum LayoutContent<'gc> {
         #[collect(require_static)]
         drawing: Drawing,
     },
+
+    /// A layout box containing an inline image from an `<img>` tag.
+    ///
+    /// The image covers one character of the text and is drawn stretched to
+    /// the box's bounds.
+    Image {
+        /// The position of the image's character in text.
+        position: usize,
+
+        /// The bitmap and its size, `None` when the source wasn't found.
+        #[collect(require_static)]
+        bitmap: Option<(BitmapHandle, u32, u32)>,
+    },
 }
 
 impl Debug for LayoutContent<'_> {
@@ -1216,6 +1364,9 @@ impl Debug for LayoutContent<'_> {
                 .debug_struct("Drawing")
                 .field("position", position)
                 .finish(),
+            LayoutContent::Image { position, .. } => {
+                f.debug_struct("Image").field("position", position).finish()
+            }
         }
     }
 }
@@ -1288,6 +1439,14 @@ impl<'gc> LayoutBox<'gc> {
         self.bounds
     }
 
+    /// Construct an inline image.
+    pub fn from_image(position: usize, bitmap: Option<(BitmapHandle, u32, u32)>) -> Self {
+        Self {
+            bounds: Default::default(),
+            content: LayoutContent::Image { position, bitmap },
+        }
+    }
+
     pub fn content(&self) -> &LayoutContent<'gc> {
         &self.content
     }
@@ -1347,7 +1506,15 @@ impl<'gc> LayoutBox<'gc> {
                 *params,
                 swf::Color::from_rgb(color.to_rgb(), 0xFF),
             )),
-            LayoutContent::Drawing { .. } => None,
+            LayoutContent::Drawing { .. } | LayoutContent::Image { .. } => None,
+        }
+    }
+
+    /// Returns the bitmap and its size for an image box.
+    pub fn as_renderable_image(&self) -> Option<&(BitmapHandle, u32, u32)> {
+        match &self.content {
+            LayoutContent::Image { bitmap, .. } => bitmap.as_ref(),
+            _ => None,
         }
     }
 
@@ -1357,6 +1524,7 @@ impl<'gc> LayoutBox<'gc> {
             LayoutContent::Text { .. } => None,
             LayoutContent::Bullet { .. } => None,
             LayoutContent::Drawing { drawing, .. } => Some(drawing),
+            LayoutContent::Image { .. } => None,
         }
     }
 
@@ -1368,11 +1536,16 @@ impl<'gc> LayoutBox<'gc> {
         matches!(&self.content, LayoutContent::Bullet { .. })
     }
 
+    pub fn is_image(&self) -> bool {
+        matches!(&self.content, LayoutContent::Image { .. })
+    }
+
     pub fn start(&self) -> usize {
         match &self.content {
             LayoutContent::Text { start, .. } => *start,
             LayoutContent::Bullet { position, .. } => *position,
             LayoutContent::Drawing { position, .. } => *position,
+            LayoutContent::Image { position, .. } => *position,
         }
     }
 
@@ -1381,6 +1554,7 @@ impl<'gc> LayoutBox<'gc> {
             LayoutContent::Text { end, .. } => *end,
             LayoutContent::Bullet { position, .. } => *position,
             LayoutContent::Drawing { position, .. } => *position,
+            LayoutContent::Image { position, .. } => *position + 1,
         }
     }
 

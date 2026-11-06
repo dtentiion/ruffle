@@ -412,7 +412,23 @@ pub struct TextSpan {
     pub url: WString,
     pub target: WString,
     pub display: TextDisplay,
+
+    /// Set on spans made by an `<img>` tag. Each character of such a span is
+    /// one image, drawn inline the way Iggy does it.
+    pub image: Option<Box<TextSpanImage>>,
 }
+
+/// An inline image from an `<img>` tag. `src` names a bitmap symbol.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextSpanImage {
+    pub src: WString,
+    pub width: Option<f64>,
+    pub height: Option<f64>,
+    pub align_middle: bool,
+}
+
+/// The character an `<img>` tag takes up in the text.
+pub const HTML_IMAGE_CHAR: u16 = 0xFFFC;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct TextSpanFont {
@@ -447,6 +463,7 @@ impl Default for TextSpan {
             url: WString::new(),
             target: WString::new(),
             display: TextDisplay::default(),
+            image: None,
         }
     }
 }
@@ -533,6 +550,7 @@ impl TextSpan {
             && self.url == rhs.url
             && self.target == rhs.target
             && self.display == rhs.display
+            && self.image == rhs.image
     }
 
     /// Apply a text format to this text span.
@@ -808,6 +826,31 @@ impl FormatSpans {
                             // Skip push to `format_stack`.
                             continue;
                         }
+                        b"img" => {
+                            // Iggy places the image inline, it takes up one character
+                            if let Some(src) = attribute(b"src").filter(|s| !s.is_empty()) {
+                                let size = |v: Option<WString>| {
+                                    v.and_then(|v| v.trim().parse::<f64>().ok())
+                                        .filter(|v| *v > 0.0)
+                                };
+                                let align_middle = attribute(b"align").is_some_and(|a| {
+                                    a.to_ascii_lowercase() == WStr::from_units(b"middle")
+                                });
+                                let image = TextSpanImage {
+                                    src,
+                                    width: size(attribute(b"width")),
+                                    height: size(attribute(b"height")),
+                                    align_middle,
+                                };
+                                text.push(HTML_IMAGE_CHAR);
+                                let mut span = TextSpan::with_length_and_format(1, &format);
+                                span.image = Some(Box::new(image));
+                                spans.push(span);
+                            }
+
+                            // Skip push to `format_stack`.
+                            continue;
+                        }
                         tag @ b"p" => {
                             p_open = true;
 
@@ -1042,7 +1085,7 @@ impl FormatSpans {
                     }
 
                     match tag_name {
-                        b"br" | b"sbr" => {
+                        b"br" | b"sbr" | b"img" => {
                             // Skip pop from `format_stack`.
                             continue;
                         }
@@ -1835,6 +1878,24 @@ impl<'a> FormatState<'a> {
 
     fn push_line(&mut self, line: &WStr) {
         if line.is_empty() {
+            return;
+        }
+
+        let span = self.current_span;
+        if let Some(image) = &span.image {
+            for _ in line.iter() {
+                let _ = write!(self.result, "<IMG SRC=\"{}\"", image.src);
+                if let Some(width) = image.width {
+                    let _ = write!(self.result, " WIDTH=\"{width}\"");
+                }
+                if let Some(height) = image.height {
+                    let _ = write!(self.result, " HEIGHT=\"{height}\"");
+                }
+                if image.align_middle {
+                    self.result.push_str(WStr::from_units(b" ALIGN=\"middle\""));
+                }
+                self.result.push_str(WStr::from_units(b"/>"));
+            }
             return;
         }
 

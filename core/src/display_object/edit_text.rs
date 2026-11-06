@@ -37,6 +37,7 @@ use gc_arena::lock::{Lock, RefLock};
 use gc_arena::{Collect, Gc, Mutation};
 use ruffle_common::utils::HasPrefixField;
 use ruffle_macros::istr;
+use ruffle_render::bitmap::PixelSnapping;
 use ruffle_render::commands::Command as RenderCommand;
 use ruffle_render::commands::CommandHandler;
 use ruffle_render::quality::StageQuality;
@@ -1332,6 +1333,26 @@ impl<'gc> EditText<'gc> {
             drawing.render(context);
         }
 
+        if let Some((bitmap, width, height)) = lbox.as_renderable_image() {
+            if *width > 0 && *height > 0 {
+                let bounds = lbox.bounds();
+                context.transform_stack.push(&Transform {
+                    matrix: Matrix::scale(
+                        bounds.width().to_pixels() as f32 / *width as f32,
+                        bounds.height().to_pixels() as f32 / *height as f32,
+                    ),
+                    ..Default::default()
+                });
+                context.commands.render_bitmap(
+                    bitmap.clone(),
+                    context.transform_stack.transform(),
+                    true,
+                    PixelSnapping::Never,
+                );
+                context.transform_stack.pop();
+            }
+        }
+
         context.transform_stack.pop();
     }
 
@@ -2246,7 +2267,7 @@ impl<'gc> EditText<'gc> {
                     first_format = Some(text_format);
                     break;
                 }
-                LayoutContent::Drawing { .. } => {}
+                LayoutContent::Drawing { .. } | LayoutContent::Image { .. } => {}
             }
         }
 

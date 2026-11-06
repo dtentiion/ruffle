@@ -803,6 +803,7 @@ impl DisplayObjectWindow {
             LayoutContent::Text { .. } => "Text box",
             LayoutContent::Bullet { .. } => "Bullet box",
             LayoutContent::Drawing { .. } => "Drawing box",
+            LayoutContent::Image { .. } => "Image box",
         };
 
         let box_text = serde_json::to_string(
