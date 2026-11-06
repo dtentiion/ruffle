@@ -4113,6 +4113,148 @@ impl Player {
         })
     }
 
+    /// `custom_draw_regions` for the movie at a stage depth: the root clip
+    /// for 0, otherwise the sibling SWF there. Each Iggy movie hands its own
+    /// regions to its scene.
+    pub fn sibling_custom_draw_regions(&mut self, depth: i32) -> Vec<(String, [f32; 4])> {
+        use crate::display_object::{BoundsMode, DisplayObject, TDisplayObject, TDisplayObjectContainer};
+        self.mutate_with_update_context(|context| {
+            let mut out = Vec::new();
+            let stage_container: DisplayObject<'_> = context.stage.into();
+            let movie = if depth == 0 {
+                context.stage.root_clip()
+            } else if let Some(stage) = stage_container.as_container() {
+                stage.iter_render_list().find(|c| c.depth() == depth)
+            } else {
+                None
+            };
+            let Some(root) = movie else {
+                return out;
+            };
+            let view = context.stage.view_matrix();
+            let mut stack = vec![root];
+            while let Some(node) = stack.pop() {
+                if !node.visible() {
+                    continue;
+                }
+                if let Some(name) = node.name() {
+                    let name = name.to_utf8_lossy().to_string();
+                    if let Some(region) = name.strip_prefix("iggy_") {
+                        let bounds = node.world_bounds(BoundsMode::Engine);
+                        if bounds.is_valid() {
+                            let p0 = view * Point::new(bounds.x_min, bounds.y_min);
+                            let p1 = view * Point::new(bounds.x_max, bounds.y_max);
+                            out.push((
+                                region.to_string(),
+                                [
+                                    p0.x.to_pixels() as f32,
+                                    p0.y.to_pixels() as f32,
+                                    p1.x.to_pixels() as f32,
+                                    p1.y.to_pixels() as f32,
+                                ],
+                            ));
+                        }
+                    }
+                }
+                if let Some(container) = node.as_container() {
+                    for child in container.iter_render_list() {
+                        stack.push(child);
+                    }
+                }
+            }
+            out
+        })
+    }
+
+    /// `call_method_on_child_path` on the movie at a stage depth, the root
+    /// clip for 0, otherwise the sibling SWF there
+    pub fn call_method_on_sibling_path(
+        &mut self,
+        depth: i32,
+        path: &str,
+        method_name: &str,
+        args: &[HostCallArg],
+    ) -> String {
+        use crate::avm2::{
+            Activation as Avm2Activation, FunctionArgs, Multiname, Value as Avm2Value,
+        };
+        use crate::display_object::{DisplayObject, TDisplayObject, TDisplayObjectContainer};
+        use crate::string::{AvmString, WString};
+        self.mutate_with_update_context(|context| {
+            let stage_container: DisplayObject<'_> = context.stage.into();
+            let movie = if depth == 0 {
+                context.stage.root_clip()
+            } else if let Some(stage) = stage_container.as_container() {
+                stage.iter_render_list().find(|c| c.depth() == depth)
+            } else {
+                None
+            };
+            let Some(mut node) = movie else {
+                return format!("err: no movie at depth {depth}");
+            };
+            for seg in path.split('.').filter(|s| !s.is_empty()) {
+                let Some(container) = node.as_container() else {
+                    return format!("err: parent of '{seg}' is not a container");
+                };
+                let Some(child) = container.child_by_name(&WString::from_utf8(seg), false) else {
+                    return format!("err: no child '{seg}' in '{path}'");
+                };
+                node = child;
+            }
+            let Some(obj) = node.object2() else {
+                return String::from("err: target has no avm2 object");
+            };
+            let mut activation = Avm2Activation::from_nothing(context);
+            let ns = activation.avm2().find_public_namespace();
+            let method_avm = AvmString::new_utf8(activation.gc(), method_name);
+            let multiname = Multiname::new(ns, method_avm);
+            let avm_args: Vec<Avm2Value> = args
+                .iter()
+                .map(|a| match a {
+                    HostCallArg::Number(n) => Avm2Value::Number(*n),
+                    HostCallArg::Bool(b) => Avm2Value::Bool(*b),
+                    HostCallArg::Str(s) => {
+                        Avm2Value::String(AvmString::new_utf8(activation.gc(), s))
+                    }
+                })
+                .collect();
+            match Avm2Value::from(obj).call_property(
+                &multiname,
+                FunctionArgs::from_slice(&avm_args),
+                &mut activation,
+            ) {
+                Ok(ret) => format!("ok: {ret:?}"),
+                Err(e) => format!("err: call failed: {e:?}"),
+            }
+        })
+    }
+
+    /// `set_child_path_visible` on the movie at a stage depth
+    pub fn set_sibling_path_visible(&mut self, depth: i32, path: &str, visible: bool) -> bool {
+        use crate::display_object::{DisplayObject, TDisplayObject, TDisplayObjectContainer};
+        use crate::string::WString;
+        self.mutate_with_update_context(|context| {
+            let stage_container: DisplayObject<'_> = context.stage.into();
+            let movie = if depth == 0 {
+                context.stage.root_clip()
+            } else if let Some(stage) = stage_container.as_container() {
+                stage.iter_render_list().find(|c| c.depth() == depth)
+            } else {
+                None
+            };
+            let Some(mut node) = movie else { return false; };
+            for seg in path.split('.').filter(|s| !s.is_empty()) {
+                let Some(container) = node.as_container() else { return false; };
+                let Some(child) = container.child_by_name(&WString::from_utf8(seg), false) else {
+                    return false;
+                };
+                node = child;
+            }
+            node.set_visible(context, visible);
+            true
+        })
+    }
+
     pub fn fetch(
         &self,
         mut request: Request,
