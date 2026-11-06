@@ -3257,6 +3257,32 @@ impl Player {
         })
     }
 
+    /// Scale and move the root clip's child at a depth, in stage pixels.
+    /// The host stretches a scene's own full screen background over a
+    /// screen wider than the movie with it.
+    pub fn set_root_child_transform_at_depth(
+        &mut self,
+        depth: i32,
+        scale_x: f32,
+        scale_y: f32,
+        tx: f64,
+        ty: f64,
+    ) -> bool {
+        use crate::display_object::{TDisplayObject, TDisplayObjectContainer};
+        use ruffle_render::matrix::Matrix as RenderMatrix;
+        self.mutate_with_update_context(|context| {
+            let Some(root) = context.stage.root_clip() else { return false; };
+            let Some(container) = root.as_container() else { return false; };
+            let Some(child) = container.child_by_depth(depth) else { return false; };
+            let mut m = RenderMatrix::scale(scale_x, scale_y);
+            m.tx = Twips::from_pixels(tx);
+            m.ty = Twips::from_pixels(ty);
+            child.set_matrix(m);
+            child.set_transformed_by_script(true);
+            true
+        })
+    }
+
     /// Stash the current matrix of every XUI-origin Bitmap into its
     /// xui_saved_matrix slot. Paired with restore_xui_matrices, used
     /// to freeze the panorama/logo/tooltips visual position across
