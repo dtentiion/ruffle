@@ -128,9 +128,34 @@ pub fn run_inner_goto_frame<'gc>(
         // queued for our target frame.
         initial_clip.base().set_skip_next_enter_frame(true);
 
+        // The frame is done when the call into the player ends, see
+        // `run_deferred_goto_frames`
+        context.frame_script_cleanup_queue.clear();
+        context.deferred_goto_frame = true;
         return;
     }
 
+    run_goto_frame_phases(context, removed_frame_scripts);
+}
+
+/// Flash leaves a SWF 9 goto's frame to be constructed and run on the next
+/// frame. Iggy does it when the call into the movie that made the goto is
+/// over: after the code that called it, before anything is drawn. A button's
+/// new label field never shows its placeholder text that way.
+pub fn run_deferred_goto_frames(context: &mut UpdateContext<'_>) {
+    // Their scripts can goto again, a few rounds settle those
+    for _ in 0..8 {
+        if !std::mem::take(&mut context.deferred_goto_frame) {
+            return;
+        }
+        run_goto_frame_phases(context, &[]);
+    }
+}
+
+fn run_goto_frame_phases<'gc>(
+    context: &mut UpdateContext<'gc>,
+    removed_frame_scripts: &[DisplayObject<'gc>],
+) {
     let stage = context.stage;
     let old_phase = *context.frame_phase;
 

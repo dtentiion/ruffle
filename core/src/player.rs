@@ -2349,11 +2349,14 @@ impl Player {
                 post_frame_callbacks,
                 notification_sender: this.notification_sender.as_ref(),
                 frame_script_cleanup_queue: VecDeque::new(),
+                deferred_goto_frame: false,
             };
 
             let prev_frame_rate = *update_context.frame_rate;
 
             let ret = f(&mut update_context);
+
+            crate::frame_lifecycle::run_deferred_goto_frames(&mut update_context);
 
             // If we changed the framerate, let the audio handler now.
             #[expect(clippy::float_cmp)]
