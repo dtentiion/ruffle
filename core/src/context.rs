@@ -7,7 +7,7 @@ use crate::avm1::Avm1;
 use crate::avm1::{Object as Avm1Object, Value as Avm1Value};
 use crate::avm2::Activation as Avm2Activation;
 use crate::avm2::api_version::ApiVersion;
-use crate::avm2::{Avm2, LoaderInfoObject, SharedObjectObject, SoundChannelObject};
+use crate::avm2::{Avm2, Domain as Avm2Domain, LoaderInfoObject, SharedObjectObject, SoundChannelObject};
 use crate::backend::{
     audio::{AudioBackend, AudioManager, SoundHandle, SoundInstanceHandle},
     log::LogBackend,
@@ -367,14 +367,23 @@ impl<'gc> UpdateContext<'gc> {
         );
         self.stage.set_movie(self.gc(), self.root_swf.clone());
 
-        let stage_domain = self.avm2.stage_domain();
-        let mut activation = Avm2Activation::from_domain(self, stage_domain);
+        // Each root movie gets its own ApplicationDomain under playerglobals,
+        // the way every Iggy scene movie has its own classes. The LCE host
+        // swaps in root movies that define the same class names with
+        // different code (4J's fourj framework at several versions, a
+        // `Panel` per menu). In the stage's shared domain the first
+        // definition of a name won, and a later menu ran an earlier menu's
+        // classes. The stage's domain is left to the sibling SWFs
+        // (panorama, logo, tooltips) that composite over the root.
+        let playerglobals_domain = self.avm2.playerglobals_domain();
+        let root_domain = Avm2Domain::movie_domain(self, playerglobals_domain);
+        let mut activation = Avm2Activation::from_domain(self, root_domain);
 
         activation
             .context
             .library
             .library_for_movie_mut(activation.context.root_swf.clone())
-            .set_avm2_domain(stage_domain);
+            .set_avm2_domain(root_domain);
         activation.context.ui.set_mouse_visible(true);
 
         let swf = activation.context.root_swf.clone();
