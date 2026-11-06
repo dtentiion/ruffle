@@ -391,6 +391,7 @@ impl<'gc> MovieClip<'gc> {
             if !eager_tags.symbolclass_names.is_empty() {
                 let names = eager_tags.symbolclass_names;
                 let mut activation = Avm2Activation::from_nothing(context);
+                let owner = activation.context.library.owner_of(&movie);
                 let domain = activation
                     .context
                     .library
@@ -407,6 +408,7 @@ impl<'gc> MovieClip<'gc> {
                             class_name.clone(),
                             movie.clone(),
                             id,
+                            &owner,
                         );
                     registered += 1;
 
@@ -834,7 +836,14 @@ impl<'gc> MovieClip<'gc> {
         let data = reader.read_slice_to_end();
         if !data.is_empty() {
             let movie = self.movie();
-            let domain = context.library.library_for_movie_mut(movie).avm2_domain();
+            // A retired movie has no library left to run its ABC in
+            let Some(domain) = context
+                .library
+                .library_for_movie(movie)
+                .and_then(|library| library.try_avm2_domain())
+            else {
+                return Ok(None);
+            };
 
             // DoAbc tag seems to be equivalent to a DoAbc2 with no flags (eager)
             match Avm2::do_abc(
@@ -876,7 +885,14 @@ impl<'gc> MovieClip<'gc> {
         let do_abc = reader.read_do_abc_2()?;
         if !do_abc.data.is_empty() {
             let movie = self.movie();
-            let domain = context.library.library_for_movie_mut(movie).avm2_domain();
+            // A retired movie has no library left to run its ABC in
+            let Some(domain) = context
+                .library
+                .library_for_movie(movie)
+                .and_then(|library| library.try_avm2_domain())
+            else {
+                return Ok(None);
+            };
             let name = AvmString::new(context.gc(), do_abc.name.decode(reader.encoding()));
 
             match Avm2::do_abc(
@@ -2726,26 +2742,29 @@ impl<'gc> MovieClip<'gc> {
                     self.0
                         .set_flag(MovieClipFlags::EXECUTING_AVM2_FRAME_SCRIPT, true);
 
+                    // A clip of a root movie that was replaced can still get
+                    // here until it's collected, and its library is gone
                     let movie = self.movie();
                     let domain = context
                         .library
                         .library_for_movie(movie)
-                        .unwrap()
-                        .avm2_domain();
+                        .and_then(|library| library.try_avm2_domain());
 
-                    let mut activation = Avm2Activation::from_domain(context, domain);
+                    if let Some(domain) = domain {
+                        let mut activation = Avm2Activation::from_domain(context, domain);
 
-                    if let Err(e) = callable.call(
-                        &mut activation,
-                        avm2_object.into(),
-                        Avm2FunctionArgs::empty(),
-                    ) {
-                        Avm2::uncaught_error(
+                        if let Err(e) = callable.call(
                             &mut activation,
-                            Some(self.into()),
-                            e,
-                            "Error running AVM2 frame script",
-                        );
+                            avm2_object.into(),
+                            Avm2FunctionArgs::empty(),
+                        ) {
+                            Avm2::uncaught_error(
+                                &mut activation,
+                                Some(self.into()),
+                                e,
+                                "Error running AVM2 frame script",
+                            );
+                        }
                     }
 
                     self.0
@@ -4555,11 +4574,14 @@ impl<'gc, 'a> MovieClip<'gc> {
 
             let movie = self.movie();
 
-            let library = activation
+            let Some(domain) = activation
                 .context
                 .library
-                .library_for_movie_mut(movie.clone());
-            let domain = library.avm2_domain();
+                .library_for_movie(movie.clone())
+                .and_then(|library| library.try_avm2_domain())
+            else {
+                return Ok(());
+            };
 
             for (class_name, id) in eager_tags.symbolclass_names {
                 let name = AvmString::new(activation.gc(), class_name);
@@ -5117,11 +5139,12 @@ impl<'gc, 'a> MovieClip<'gc> {
         // into this importer's library under the same id. That
         // sidesteps the need for a separate cross-movie placement
         // function with its own defensive AS3 skips.
+        let owner = activation.context.library.owner_of(&movie);
         let pending = activation
             .context
             .library
             .avm2_class_registry()
-            .pending_imported_symbol(name.as_wstr());
+            .pending_imported_symbol(name.as_wstr(), &owner);
         if let Some((src_movie, char_id)) = pending {
             let src_char = activation
                 .context

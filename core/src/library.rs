@@ -27,6 +27,14 @@ struct MovieSymbol(Arc<SwfMovie>, CharacterId);
 #[derive(Clone)]
 struct WeakMovieSymbol(Weak<SwfMovie>, CharacterId);
 
+/// A SymbolClass entry from an imported movie, and the root or sibling
+/// movie at the top of the import tree it was loaded for.
+struct PendingImport {
+    owner: Weak<SwfMovie>,
+    movie: Arc<SwfMovie>,
+    symbol: CharacterId,
+}
+
 impl WeakElement for WeakMovieSymbol {
     type Strong = MovieSymbol;
 
@@ -56,7 +64,7 @@ pub struct Avm2ClassRegistry<'gc> {
     /// frames executed, so the normal `run_abc_and_symbol_tags` path never
     /// fires for them; we stash the entries here by class name and resolve
     /// them lazily the first time the importer looks the class up.
-    pending_imported_symbols: HashMap<crate::string::WString, (Arc<SwfMovie>, CharacterId)>,
+    pending_imported_symbols: HashMap<crate::string::WString, Vec<PendingImport>>,
 }
 
 unsafe impl<'gc> Collect<'gc> for Avm2ClassRegistry<'gc> {
@@ -82,25 +90,54 @@ impl<'gc> Avm2ClassRegistry<'gc> {
     }
 
     /// Stash a SymbolClass entry from an imported SWF by class name so
-    /// the importer's resolver can pick it up later. The latest import of
-    /// a name wins: every root movie loads its own copy of the libraries
-    /// it imports, bound to classes in its own domain, and an earlier
-    /// root's copy would hand out characters bound to that root's classes.
+    /// the importer's resolver can pick it up later. Every root and sibling
+    /// movie loads its own copy of the libraries it imports, bound to
+    /// classes in its own domain, so each keeps its own entry, and a newer
+    /// import for the same movie replaces its older one.
     pub fn register_pending_imported_symbol(
         &mut self,
         class_name: crate::string::WString,
         movie: Arc<SwfMovie>,
         symbol: CharacterId,
+        owner: &Arc<SwfMovie>,
     ) {
-        self.pending_imported_symbols.insert(class_name, (movie, symbol));
+        let owner_ptr = Arc::as_ptr(owner);
+        let entries = self.pending_imported_symbols.entry(class_name).or_default();
+        entries.retain(|entry| !std::ptr::eq(entry.owner.as_ptr(), owner_ptr));
+        entries.push(PendingImport {
+            owner: Arc::downgrade(owner),
+            movie,
+            symbol,
+        });
     }
 
-    /// Look up a pending imported SymbolClass entry by class name.
+    /// Forget the class symbols and pending imports of movies that were
+    /// retired. A class's methods hold their movie, so a class symbol kept
+    /// for a retired movie would keep the movie and the class alive.
+    fn drop_movies(&mut self, is_retired: &dyn Fn(&Arc<SwfMovie>) -> bool) {
+        self.pending_imported_symbols.retain(|_, entries| {
+            entries.retain(|entry| !is_retired(&entry.movie));
+            !entries.is_empty()
+        });
+        self.class_map.retain(|_, symbol| !is_retired(&symbol.0));
+    }
+
+    /// Look up a pending imported SymbolClass entry by class name: the one
+    /// imported for `owner` if there is one, or else the latest. An earlier
+    /// root's copy would hand out characters bound to that root's classes.
     pub fn pending_imported_symbol(
         &self,
         class_name: &crate::string::WStr,
+        owner: &Arc<SwfMovie>,
     ) -> Option<(Arc<SwfMovie>, CharacterId)> {
-        self.pending_imported_symbols.get(class_name).cloned()
+        let entries = self.pending_imported_symbols.get(class_name)?;
+        let owner_ptr = Arc::as_ptr(owner);
+        entries
+            .iter()
+            .rev()
+            .find(|entry| std::ptr::eq(entry.owner.as_ptr(), owner_ptr))
+            .or_else(|| entries.last())
+            .map(|entry| (entry.movie.clone(), entry.symbol))
     }
 
     /// Retrieve the library symbol for a given AVM2 class object.
@@ -485,6 +522,24 @@ pub struct Library<'gc> {
     /// A list of the symbols associated with specific AVM2 constructor
     /// prototypes.
     avm2_class_registry: Avm2ClassRegistry<'gc>,
+
+    /// The movies loaded for an ImportAssets tag, each with the movie at
+    /// the top of its import tree: the root movie or a sibling movie.
+    #[collect(require_static)]
+    imported_movies: Vec<(Weak<SwfMovie>, Weak<SwfMovie>)>,
+
+    /// Root movies that were replaced, and the movies imported for them.
+    /// A library's characters and classes hold its movie, so its entry
+    /// never expires on its own. These are dropped, and dropped again if
+    /// something still running from them makes a new one.
+    #[collect(require_static)]
+    retired_movies: Vec<Weak<SwfMovie>>,
+
+    /// The movies ImportAssets loaded, by the url it asked for. Each import
+    /// gets a copy that shares the uncompressed data, so it still has a
+    /// library and classes of its own.
+    #[collect(require_static)]
+    import_cache: HashMap<String, Arc<SwfMovie>>,
 }
 
 impl<'gc> Library<'gc> {
@@ -498,6 +553,9 @@ impl<'gc> Library<'gc> {
             default_font_names: Default::default(),
             default_font_cache: Default::default(),
             avm2_class_registry: Default::default(),
+            imported_movies: Vec::new(),
+            retired_movies: Vec::new(),
+            import_cache: HashMap::new(),
         }
     }
 
@@ -511,6 +569,78 @@ impl<'gc> Library<'gc> {
 
     pub fn known_movies(&self) -> impl Iterator<Item = Arc<SwfMovie>> {
         self.movie_libraries.known_movies()
+    }
+
+    /// Record a movie ImportAssets loaded, and the root or sibling movie at
+    /// the top of the import tree it was loaded for.
+    pub fn register_imported_movie(&mut self, movie: &Arc<SwfMovie>, owner: &Arc<SwfMovie>) {
+        self.imported_movies
+            .retain(|(movie, owner)| movie.strong_count() > 0 && owner.strong_count() > 0);
+        self.imported_movies
+            .push((Arc::downgrade(movie), Arc::downgrade(owner)));
+    }
+
+    /// The root or sibling movie at the top of the import tree this movie
+    /// was loaded for, or the movie itself when it wasn't imported.
+    pub fn owner_of(&self, movie: &Arc<SwfMovie>) -> Arc<SwfMovie> {
+        let ptr = Arc::as_ptr(movie);
+        self.imported_movies
+            .iter()
+            .find(|(imported, _)| std::ptr::eq(imported.as_ptr(), ptr))
+            .and_then(|(_, owner)| owner.upgrade())
+            .unwrap_or_else(|| movie.clone())
+    }
+
+    /// Whether this movie is a root movie that was replaced, or was imported
+    /// for one. A held `Weak` keeps its address from being reused.
+    pub fn is_retired(&self, movie: &Arc<SwfMovie>) -> bool {
+        let ptr = Arc::as_ptr(movie);
+        self.retired_movies
+            .iter()
+            .any(|retired| std::ptr::eq(retired.as_ptr(), ptr))
+    }
+
+    /// Drop the libraries of a root movie that was replaced and of the
+    /// movies imported for it, with their class symbols and pending imports.
+    pub fn retire_movie(&mut self, movie: &Arc<SwfMovie>) {
+        let owner = Arc::as_ptr(movie);
+        self.retired_movies.push(Arc::downgrade(movie));
+        let mut kept = Vec::with_capacity(self.imported_movies.len());
+        for (imported, imported_for) in self.imported_movies.drain(..) {
+            if std::ptr::eq(imported_for.as_ptr(), owner) {
+                self.retired_movies.push(imported);
+            } else {
+                kept.push((imported, imported_for));
+            }
+        }
+        self.imported_movies = kept;
+        self.drop_retired();
+    }
+
+    /// Drop whatever is left of the retired movies: their libraries, class
+    /// symbols and pending imports. A retired movie nothing holds any more
+    /// is forgotten.
+    pub fn drop_retired(&mut self) {
+        self.retired_movies.retain(|movie| movie.strong_count() > 0);
+        if self.retired_movies.is_empty() {
+            return;
+        }
+        let retired: Vec<*const SwfMovie> = self.retired_movies.iter().map(Weak::as_ptr).collect();
+        let is_retired = |movie: &Arc<SwfMovie>| retired.contains(&Arc::as_ptr(movie));
+        self.movie_libraries
+            .0
+            .retain(|movie, _| !is_retired(&movie));
+        self.avm2_class_registry.drop_movies(&is_retired);
+    }
+
+    /// The movie ImportAssets loaded for this url before, if any.
+    pub fn cached_import(&self, url: &str) -> Option<Arc<SwfMovie>> {
+        self.import_cache.get(url).cloned()
+    }
+
+    /// Keep a movie ImportAssets loaded, for the next import of the url.
+    pub fn cache_import(&mut self, url: String, movie: &SwfMovie) {
+        self.import_cache.insert(url, Arc::new(movie.clone()));
     }
 
     /// Returns the default Font implementations behind the built in names (ie `_sans`)

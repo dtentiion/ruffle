@@ -472,7 +472,65 @@ impl<'gc> UpdateContext<'gc> {
             }
         }
 
+        let outgoing = self.root_swf.clone();
+        let outgoing_root = self.stage.root_clip();
         self.set_root_movie(movie);
+        if let Some(outgoing_root) = outgoing_root {
+            self.forget_objects_under(outgoing_root);
+        }
+
+        // Nothing points at the outgoing root's library from here on, but
+        // its characters and classes hold the movie, so the library would
+        // never expire. It's dropped with the libraries of the movies it
+        // imported, and with anything a later root's swap finds made again
+        // by what's left running from it.
+        self.library.retire_movie(&outgoing);
+    }
+
+    /// The pointer, focus and drag can still be on objects of the root
+    /// movie that was just replaced, which would keep that movie's objects
+    /// and classes alive. The replaced root keeps the stage as its parent,
+    /// so anything under it is let go.
+    fn forget_objects_under(&mut self, outgoing_root: DisplayObject<'gc>) {
+        use crate::display_object::TInteractiveObject;
+
+        let detached = |object: DisplayObject<'gc>| {
+            let mut ancestor = Some(object);
+            while let Some(current) = ancestor {
+                if DisplayObject::ptr_eq(current, outgoing_root) {
+                    return true;
+                }
+                ancestor = current.parent();
+            }
+            false
+        };
+
+        let focus_tracker = self.focus_tracker;
+        if let Some(focus) = focus_tracker.get()
+            && detached(focus.as_displayobject())
+        {
+            focus_tracker.forget(self);
+        }
+
+        let mouse_data = &mut *self.mouse_data;
+        for object in [
+            &mut mouse_data.hovered,
+            &mut mouse_data.pressed,
+            &mut mouse_data.right_pressed,
+            &mut mouse_data.middle_pressed,
+        ] {
+            if object.is_some_and(|object| detached(object.as_displayobject())) {
+                *object = None;
+            }
+        }
+
+        if self
+            .drag_object
+            .as_ref()
+            .is_some_and(|drag| detached(drag.display_object))
+        {
+            *self.drag_object = None;
+        }
     }
 
     pub fn send_notification(&self, notification: PlayerNotification) {

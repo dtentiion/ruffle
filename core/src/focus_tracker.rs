@@ -119,6 +119,18 @@ impl<'gc> FocusTracker<'gc> {
         self.update_edittext_selection();
     }
 
+    /// Let go of the focus without any focus events, for an object of a
+    /// root movie that was replaced. Its focus handlers would only move the
+    /// focus to another of its own objects.
+    pub fn forget(&self, context: &mut UpdateContext<'gc>) {
+        if let Some(old) = self.0.focus.get() {
+            old.set_has_focus(false);
+        }
+        let focus = unlock!(Gc::write(context.gc(), self.0), FocusTrackerData, focus);
+        focus.set(None);
+        self.update_highlight(context);
+    }
+
     /// Reset the focus programmatically.
     pub fn reset_focus(&self, context: &mut UpdateContext<'gc>) {
         self.set_internal(None, context, true);

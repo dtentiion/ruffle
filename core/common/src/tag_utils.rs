@@ -16,8 +16,8 @@ pub struct SwfMovie {
     /// The SWF header parsed from the data stream.
     header: HeaderExt,
 
-    /// Uncompressed SWF data.
-    data: Vec<u8>,
+    /// Uncompressed SWF data. A clone of the movie shares it.
+    data: Arc<Vec<u8>>,
 
     /// The URL the SWF was downloaded from.
     url: String,
@@ -60,7 +60,7 @@ impl SwfMovie {
         let sandbox_type = SandboxType::infer(url.as_str(), &header);
         Self {
             header,
-            data: vec![],
+            data: Arc::new(vec![]),
             url,
             loader_url,
             parameters: Vec::new(),
@@ -89,7 +89,7 @@ impl SwfMovie {
         Self {
             header,
             compressed_len,
-            data: Vec::new(),
+            data: Arc::new(Vec::new()),
             url,
             loader_url,
             parameters: Vec::new(),
@@ -115,7 +115,7 @@ impl SwfMovie {
         Self {
             header,
             compressed_len: compressed_data.len(),
-            data: compressed_data,
+            data: Arc::new(compressed_data),
             url,
             loader_url,
             parameters: Vec::new(),
@@ -138,7 +138,7 @@ impl SwfMovie {
         let sandbox_type = SandboxType::infer(movie_url.as_str(), &header);
         Self {
             header,
-            data: vec![],
+            data: Arc::new(vec![]),
             url: movie_url,
             loader_url: None,
             parameters: Vec::new(),
@@ -162,7 +162,7 @@ impl SwfMovie {
         let sandbox_type = SandboxType::infer(url.as_str(), &swf_buf.header);
         let mut movie = Self {
             header: swf_buf.header,
-            data: swf_buf.data,
+            data: Arc::new(swf_buf.data),
             url,
             loader_url,
             parameters: Vec::new(),
@@ -182,7 +182,7 @@ impl SwfMovie {
         let sandbox_type = SandboxType::infer(url.as_str(), &header);
         let mut movie = Self {
             header,
-            data: vec![],
+            data: Arc::new(vec![]),
             url,
             loader_url: None,
             parameters: Vec::new(),

@@ -2581,11 +2581,15 @@ pub trait TDisplayObject<'gc>:
             if let Some(child) = self.object2()
                 && let Some(name) = self.name()
             {
-                let domain = context
+                // An object of a root movie that was replaced has no
+                // library left
+                let Some(domain) = context
                     .library
                     .library_for_movie(self.movie())
-                    .unwrap()
-                    .avm2_domain();
+                    .and_then(|library| library.try_avm2_domain())
+                else {
+                    return;
+                };
 
                 let mut activation = Avm2Activation::from_domain(context, domain);
                 let multiname = Avm2Multiname::new(activation.avm2().find_public_namespace(), name);

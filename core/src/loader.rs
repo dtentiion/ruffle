@@ -310,90 +310,116 @@ impl<'gc> LoadManager<'gc> {
         // executing when that is the case(?).
         let player = uc.player_handle();
         let importer_movie = MovieClipHandle::stash(uc, importer_movie);
+        // Every root movie imports the same skin movies. The first load of a
+        // url is kept, and later imports copy it, sharing the uncompressed
+        // data, instead of reading and decompressing the file again.
+        let request_url = request.url().to_string();
+        let cached = uc.library.cached_import(&request_url);
 
         Box::pin(async move {
-            let fetch = player.lock().unwrap().fetch(request, FetchReason::LoadSwf);
+            let (movie, url) = if let Some(cached) = cached {
+                let url = cached.url().to_string();
+                (Arc::new((*cached).clone()), url)
+            } else {
+                let fetch = player.lock().unwrap().fetch(request, FetchReason::LoadSwf);
 
-            match wait_for_full_response(fetch).await {
-                // TODO: In some cases, if the fetched url is a directory,
-                // FP will ignore it and continue to execute the movie.
-                Ok((body, url, _status, _redirected)) => {
-                    let content_type = ContentType::sniff(&body);
-                    tracing::info!("Loading imported movie: {:?}", url);
+                match wait_for_full_response(fetch).await {
+                    // TODO: In some cases, if the fetched url is a directory,
+                    // FP will ignore it and continue to execute the movie.
+                    Ok((body, url, _status, _redirected)) => {
+                        let content_type = ContentType::sniff(&body);
+                        tracing::info!("Loading imported movie: {:?}", url);
 
-                    player.lock().unwrap().mutate_with_update_context(|uc| {
-                        let importer_movie = importer_movie.fetch(uc);
-
-                        if matches!(content_type, ContentType::Swf) {
-                            let movie = SwfMovie::from_data(&body, url.clone(), Some(url.clone()))
-                                .expect("Could not load movie");
-
-                            let movie = Arc::new(movie);
-
-                            let clip = MovieClip::new_import_assets(uc, movie, importer_movie);
-
-                            clip.set_cur_preload_frame(0);
-                            // Inherit the importer's avm2_domain. Without
-                            // this, any AS3 path that looks the imported
-                            // character's library up (set_on_parent_field,
-                            // resolve_place_by_class_name, class lookups)
-                            // hits an unwrap on avm2_domain. Sharing the
-                            // importer's domain is also semantically
-                            // correct: ImportAssets2 siblings are supposed
-                            // to live in the same ApplicationDomain.
-                            let importer_domain = uc
-                                .library
-                                .library_for_movie(importer_movie.movie())
-                                .and_then(|lib| lib.try_avm2_domain());
-                            let imported_lib = uc.library.library_for_movie_mut(clip.movie());
-                            if let Some(domain) = importer_domain
-                                && imported_lib.try_avm2_domain().is_none()
-                            {
-                                imported_lib.set_avm2_domain(domain);
-                            }
-                            tracing::debug!("Preloading swf to run exports {:?}", url);
-
-                            // Cascade preload up the import tree: pump
-                            // this clip's preload until it either yields
-                            // on a nested ImportAssets2 (that future
-                            // will resume us later) or fully preloads.
-                            // On full preload, drain SymbolClass into
-                            // the pending map and clear the importer's
-                            // awaiting_import, recursing up.
-                            try_settle_imports(uc, clip);
-                        } else {
+                        if !matches!(content_type, ContentType::Swf) {
                             tracing::warn!(
                                 "Unsupported content type for ImportAssets: {:?}",
                                 content_type
                             );
+                            player.lock().unwrap().mutate_with_update_context(|uc| {
+                                let importer_movie = importer_movie.fetch(uc);
+                                importer_movie.finish_importing();
+                                try_settle_imports(uc, importer_movie);
+                            });
+                            return Ok(());
+                        }
+
+                        let movie = SwfMovie::from_data(&body, url.clone(), Some(url.clone()))
+                            .expect("Could not load movie");
+                        player.lock().unwrap().mutate_with_update_context(|uc| {
+                            uc.library.cache_import(request_url, &movie);
+                        });
+                        (Arc::new(movie), url)
+                    }
+                    Err(e) => {
+                        tracing::info!(
+                            "load_asset_movie Err branch for {:?}: {:?}",
+                            e.url,
+                            e.error
+                        );
+                        tracing::warn!("Failed to fetch imported SWF {:?}: {:?}", e.url, e.error);
+                        player.lock().unwrap().mutate_with_update_context(|uc| {
+                            let importer_movie = importer_movie.fetch(uc);
                             importer_movie.finish_importing();
                             try_settle_imports(uc, importer_movie);
-                        }
-                    });
-                    Ok(())
+                        });
+                        return Err(Error::FetchError(format!(
+                            "Could not fetch: {:?} because {:?}",
+                            e.url, e.error
+                        )));
+                    }
                 }
-                Err(e) => {
-                    tracing::info!(
-                        "load_asset_movie Err branch for {:?}: {:?}",
-                        e.url,
-                        e.error
-                    );
-                    tracing::warn!(
-                        "Failed to fetch imported SWF {:?}: {:?}",
-                        e.url,
-                        e.error
-                    );
-                    player.lock().unwrap().mutate_with_update_context(|uc| {
-                        let importer_movie = importer_movie.fetch(uc);
-                        importer_movie.finish_importing();
-                        try_settle_imports(uc, importer_movie);
-                    });
-                    Err(Error::FetchError(format!(
-                        "Could not fetch: {:?} because {:?}",
-                        e.url, e.error
-                    )))
+            };
+
+            player.lock().unwrap().mutate_with_update_context(|uc| {
+                let importer_movie = importer_movie.fetch(uc);
+
+                // The root or sibling movie this import tree was loaded for.
+                // A root replaced while the import loaded is gone, and so is
+                // its library, so nothing is made for it.
+                let mut top = importer_movie;
+                while let Some(importer) = top.importer_movie() {
+                    top = importer;
                 }
-            }
+                let owner = top.movie();
+                if uc.library.is_retired(&owner) {
+                    tracing::info!("Dropping import {:?} for a replaced root movie", url);
+                    return;
+                }
+
+                let clip = MovieClip::new_import_assets(uc, movie, importer_movie);
+                uc.library.register_imported_movie(&clip.movie(), &owner);
+
+                clip.set_cur_preload_frame(0);
+                // Inherit the importer's avm2_domain. Without
+                // this, any AS3 path that looks the imported
+                // character's library up (set_on_parent_field,
+                // resolve_place_by_class_name, class lookups)
+                // hits an unwrap on avm2_domain. Sharing the
+                // importer's domain is also semantically
+                // correct: ImportAssets2 siblings are supposed
+                // to live in the same ApplicationDomain.
+                let importer_domain = uc
+                    .library
+                    .library_for_movie(importer_movie.movie())
+                    .and_then(|lib| lib.try_avm2_domain());
+                let imported_lib = uc.library.library_for_movie_mut(clip.movie());
+                if let Some(domain) = importer_domain
+                    && imported_lib.try_avm2_domain().is_none()
+                {
+                    imported_lib.set_avm2_domain(domain);
+                }
+                tracing::debug!("Preloading swf to run exports {:?}", url);
+
+                // Cascade preload up the import tree: pump
+                // this clip's preload until it either yields
+                // on a nested ImportAssets2 (that future
+                // will resume us later) or fully preloads.
+                // On full preload, drain SymbolClass into
+                // the pending map and clear the importer's
+                // awaiting_import, recursing up.
+                try_settle_imports(uc, clip);
+            });
+            Ok(())
         })
     }
 

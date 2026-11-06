@@ -61,14 +61,19 @@ pub fn get_application_domain<'gc>(
                 }
             }
 
-            // A loaded SWF will always have an AVM2 domain present.
+            // A loaded SWF will always have an AVM2 domain present, unless
+            // it was a root movie that was replaced and its library dropped
             LoaderStream::Swf(movie, _) => {
                 let domain = activation
                     .context
                     .library
-                    .library_for_movie_mut(movie.clone())
-                    .avm2_domain();
-                return Ok(DomainObject::from_domain(activation, domain).into());
+                    .library_for_movie(movie.clone())
+                    .and_then(|library| library.try_avm2_domain());
+                if let Some(domain) = domain {
+                    return Ok(DomainObject::from_domain(activation, domain).into());
+                } else {
+                    return Ok(Value::Null);
+                }
             }
         }
     }

@@ -716,10 +716,11 @@ impl<'a, 'gc> LayoutContext<'a, 'gc> {
         let symbol = crate::tag_utils::xui_bitmap_lookup(&name).map(|e| (e.movie, e.char_id));
         let mut bitmap = Self::bitmap_symbol(context, symbol);
         if bitmap.is_none() {
+            let owner = context.library.owner_of(&self.movie);
             let symbol = context
                 .library
                 .avm2_class_registry()
-                .pending_imported_symbol(src);
+                .pending_imported_symbol(src, &owner);
             bitmap = Self::bitmap_symbol(context, symbol);
         }
         if bitmap.is_none() {
