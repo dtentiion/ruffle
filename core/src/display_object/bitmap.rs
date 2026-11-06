@@ -136,10 +136,6 @@ pub struct BitmapGraphicData<'gc> {
     /// over time to see if the Panorama scroll animation is running.
     xui_origin: Cell<bool>,
 
-    /// Placed by AS3 class name (Iggy texture import). Iggy filters these,
-    /// even though the AS3 Bitmap ctor leaves `smoothing` off.
-    class_import: Cell<bool>,
-
     /// Per-instance render counter for the xui_origin diagnostic.
     /// Process-global counters get biased toward whichever Bitmap
     /// renders first in the frame, so we keep one here instead.
@@ -202,7 +198,6 @@ impl<'gc> Bitmap<'gc> {
                 height: Cell::new(height),
                 xui_scale: Cell::new(None),
                 xui_origin: Cell::new(false),
-                class_import: Cell::new(false),
                 xui_render_tick: Cell::new(0),
                 xui_tx_offset: Cell::new(None),
                 xui_saved_matrix: Cell::new(None),
@@ -275,10 +270,6 @@ impl<'gc> Bitmap<'gc> {
     /// diagnostics can find it later. Independent of `set_xui_scale`.
     pub fn set_xui_origin(self, is_xui: bool) {
         self.0.xui_origin.set(is_xui);
-    }
-
-    pub fn set_class_import(self, value: bool) {
-        self.0.class_import.set(value);
     }
 
     /// Set the authored-tx correction (see `xui_tx_offset` field
@@ -554,10 +545,11 @@ impl<'gc> TDisplayObject<'gc> for Bitmap<'gc> {
             });
         }
 
-        // Iggy filters imported textures (the menu panorama tiles) even
-        // though the AS3 Bitmap ctor leaves smoothing off for timeline bitmaps
-        let smoothing =
-            self.0.smoothing.get() || self.0.xui_origin.get() || self.0.class_import.get();
+        // Iggy filters the textures the host imports (the menu panorama
+        // tiles) even though the AS3 Bitmap ctor leaves smoothing off for
+        // timeline bitmaps. Bitmaps the SWF itself carries, like the HUD's
+        // pixel art, keep the SWF's own smoothing.
+        let smoothing = self.0.smoothing.get() || self.0.xui_origin.get();
         self.0.bitmap_data.get().render(
             smoothing,
             context,
