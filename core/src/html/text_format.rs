@@ -809,10 +809,9 @@ impl FormatSpans {
                     let mut format = format_stack.last().unwrap().clone();
                     match tag_name {
                         b"br" => {
-                            if is_multiline {
-                                text.push(HTML_NEWLINE);
-                                spans.push(TextSpan::with_length_and_format(1, &format));
-                            }
+                            // Iggy breaks the line on <br> in single line fields too
+                            text.push(HTML_NEWLINE);
+                            spans.push(TextSpan::with_length_and_format(1, &format));
 
                             // Skip push to `format_stack`.
                             continue;
