@@ -4042,6 +4042,32 @@ impl Player {
         })
     }
 
+    /// The x, y, width and height Iggy's UIControl reads off a value path,
+    /// x and y in the parent's coordinates.
+    pub fn child_path_rect(&mut self, path: &str) -> Option<[f64; 4]> {
+        use crate::display_object::{TDisplayObject, TDisplayObjectContainer};
+        use crate::string::WString;
+        self.mutate_with_update_context(|context| {
+            let mut node = context.stage.root_clip()?;
+            for seg in path.split('.').filter(|s| !s.is_empty()) {
+                let container = node.as_container()?;
+                node = container.child_by_name(&WString::from_utf8(seg), false)?;
+            }
+            Some([node.x().to_pixels(), node.y().to_pixels(), node.width(), node.height()])
+        })
+    }
+
+    /// IggyMakeEventMouseMove: the mouse moves to a point on the stage,
+    /// given in stage coordinates rather than viewport pixels.
+    pub fn mouse_move_stage(&mut self, x: f64, y: f64) {
+        let view = self.mutate_with_update_context(|context| context.stage.view_matrix());
+        let p = view * Point::new(swf::Twips::from_pixels(x), swf::Twips::from_pixels(y));
+        self.handle_event(PlayerEvent::MouseMove {
+            x: p.x.to_pixels(),
+            y: p.y.to_pixels(),
+        });
+    }
+
     /// Iggy hands objects named `iggy_<name>` to the game to draw into
     /// (UIScene::customDraw gets `<name>`). This lists the visible ones with
     /// their rectangle in viewport pixels, x0 y0 x1 y1.
