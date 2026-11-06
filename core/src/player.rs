@@ -3296,11 +3296,14 @@ impl Player {
         let count = Cell::new(0u32);
         self.mutate_with_update_context(|context| {
             fn walk<'gc>(dobj: DisplayObject<'gc>, playing: bool, context: &mut crate::context::UpdateContext<'gc>) {
+                // Only what was playing is stopped and played again, a
+                // clip stopped on a frame (tooltip glyphs, one shot
+                // animations) stays where it is
                 if let Some(mc) = dobj.as_movie_clip() {
                     if playing {
-                        mc.play();
+                        mc.host_resume();
                     } else {
-                        mc.stop(context);
+                        mc.host_pause(context);
                     }
                 }
                 if let Some(container) = dobj.as_container() {

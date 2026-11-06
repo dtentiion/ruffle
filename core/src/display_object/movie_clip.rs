@@ -1000,6 +1000,22 @@ impl<'gc> MovieClip<'gc> {
         self.0.play()
     }
 
+    /// Stop this clip for the host if it's playing, remembering that it was.
+    pub fn host_pause(self, context: &mut UpdateContext<'gc>) {
+        if self.0.playing() {
+            self.0.stop(context);
+            self.0.set_flag(MovieClipFlags::HOST_PAUSED, true);
+        }
+    }
+
+    /// Play this clip again if `host_pause` stopped it.
+    pub fn host_resume(self) {
+        if self.0.contains_flag(MovieClipFlags::HOST_PAUSED) {
+            self.0.set_flag(MovieClipFlags::HOST_PAUSED, false);
+            self.0.play();
+        }
+    }
+
     pub fn prev_frame(self, context: &mut UpdateContext<'gc>) {
         if self.current_frame() > 1 {
             self.goto_frame(context, self.current_frame() - 1, true);
@@ -5677,6 +5693,10 @@ bitflags! {
 
         /// Whether this `MovieClip` has been post-instantiated yet.
         const POST_INSTANTIATED = 1 << 6;
+
+        /// Stopped by the host while a scene is swapped in, and only those
+        /// get played again afterwards.
+        const HOST_PAUSED = 1 << 7;
     }
 }
 
