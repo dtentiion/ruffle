@@ -2873,6 +2873,11 @@ impl Player {
                 }
                 let mut stage = context.stage;
                 stage.remove_child(context, child);
+                // A removed sibling (a message box) isn't coming back, so
+                // its library and the movies it imported are dropped the
+                // way a replaced root's are
+                context.forget_objects_under(child);
+                context.library.retire_movie(&child.movie());
                 found.set(true);
             }
         });

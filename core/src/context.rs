@@ -487,11 +487,11 @@ impl<'gc> UpdateContext<'gc> {
         self.library.retire_movie(&outgoing);
     }
 
-    /// The pointer, focus and drag can still be on objects of the root
-    /// movie that was just replaced, which would keep that movie's objects
-    /// and classes alive. The replaced root keeps the stage as its parent,
-    /// so anything under it is let go.
-    fn forget_objects_under(&mut self, outgoing_root: DisplayObject<'gc>) {
+    /// The pointer, focus and drag can still be on objects of a root movie
+    /// that was just replaced or a sibling movie that was removed, which
+    /// would keep that movie's objects and classes alive. A replaced root
+    /// keeps the stage as its parent, so anything under it is let go.
+    pub(crate) fn forget_objects_under(&mut self, outgoing_root: DisplayObject<'gc>) {
         use crate::display_object::TInteractiveObject;
 
         let detached = |object: DisplayObject<'gc>| {
