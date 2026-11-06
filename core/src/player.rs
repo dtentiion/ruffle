@@ -2650,20 +2650,22 @@ impl Player {
                 Ok(m) => Arc::new(m),
                 Err(e) => return format!("err: parse swf: {:?}", e),
             };
-            // Register the new movie's library and bind it to the
-            // stage domain so its ABC classes resolve against the same
-            // domain as the root movie. This matches how console
-            // Iggy-composited scenes share the top-level domain.
-            let stage_domain = context.avm2.stage_domain();
+            // Each sibling gets its own domain like a root movie, as every
+            // Iggy movie has its own. The skins they import define the same
+            // class names differently (skinHDGraphics' FJ_Label_Black has a
+            // wider text field than skinHDGraphicsInGame's), and in one
+            // shared domain the first sibling's classes won for all.
+            let playerglobals_domain = context.avm2.playerglobals_domain();
+            let domain = crate::avm2::Domain::movie_domain(context, playerglobals_domain);
             context
                 .library
                 .library_for_movie_mut(movie.clone())
-                .set_avm2_domain(stage_domain);
+                .set_avm2_domain(domain);
 
             // Build a MovieClip for the sibling using the same pattern
             // as Player::set_root_movie, but with is_root=false so it
             // renders as a child instead of owning the stage.
-            let mut activation = Avm2Activation::from_domain(context, stage_domain);
+            let mut activation = Avm2Activation::from_domain(context, domain);
             let sibling_mc =
                 crate::display_object::MovieClip::player_root_movie(&mut activation, movie.clone());
             drop(activation);
