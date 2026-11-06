@@ -79,6 +79,7 @@ impl Surface {
         commands: CommandList,
         layer: LayerRef,
         texture_pool: &mut TexturePool,
+        gamma: f32,
     ) {
         let target = self.draw_commands(
             render_target_mode,
@@ -101,6 +102,7 @@ impl Surface {
             target.whole_frame_bind_group(descriptors),
             target.globals(),
             1,
+            gamma,
             draw_encoder,
         );
     }

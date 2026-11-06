@@ -21,7 +21,7 @@ pub struct Descriptors {
     pub bitmap_samplers: BitmapSamplers,
     pub bind_layouts: BindLayouts,
     pub quad: Quad,
-    copy_pipeline: Mutex<FnvHashMap<(u32, wgpu::TextureFormat), wgpu::RenderPipeline>>,
+    copy_pipeline: Mutex<FnvHashMap<(u32, wgpu::TextureFormat, u32), wgpu::RenderPipeline>>,
     copy_srgb_pipeline: Mutex<FnvHashMap<(u32, wgpu::TextureFormat), wgpu::RenderPipeline>>,
     pub shaders: Shaders,
     pipelines: Mutex<FnvHashMap<(u32, wgpu::TextureFormat), Arc<Pipelines>>>,
@@ -139,13 +139,14 @@ impl Descriptors {
         &self,
         format: wgpu::TextureFormat,
         msaa_sample_count: u32,
+        gamma: f32,
     ) -> wgpu::RenderPipeline {
         let mut pipelines = self
             .copy_pipeline
             .lock()
             .expect("Pipelines should not be already locked");
         pipelines
-            .entry((msaa_sample_count, format))
+            .entry((msaa_sample_count, format, gamma.to_bits()))
             .or_insert_with(|| {
                 let copy_texture_pipeline_layout =
                     &self
@@ -179,7 +180,10 @@ impl Descriptors {
                                 blend: Some(wgpu::BlendState::REPLACE),
                                 write_mask: Default::default(),
                             })],
-                            compilation_options: Default::default(),
+                            compilation_options: wgpu::PipelineCompilationOptions {
+                                constants: &[("gamma", f64::from(gamma))],
+                                ..Default::default()
+                            },
                         }),
                         primitive: wgpu::PrimitiveState {
                             topology: wgpu::PrimitiveTopology::TriangleList,

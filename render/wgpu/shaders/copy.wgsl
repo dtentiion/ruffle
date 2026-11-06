@@ -11,6 +11,8 @@ struct VertexOutput {
 @group(2) @binding(0) var<uniform> textureTransforms: common__TextureTransforms;
 @group(2) @binding(1) var texture: texture_2d<f32>;
 @group(2) @binding(2) var texture_sampler: sampler;
+/// A gamma the host puts on the finished frame, 1 copies it as it is
+override gamma: f32 = 1.0;
 
 @vertex
 fn main_vertex(in: common__VertexInput) -> VertexOutput {
@@ -22,5 +24,11 @@ fn main_vertex(in: common__VertexInput) -> VertexOutput {
 
 @fragment
 fn main_fragment(in: VertexOutput) -> @location(0) vec4<f32> {
-    return textureSample(texture, texture_sampler, in.uv);
+    let color = textureSample(texture, texture_sampler, in.uv);
+    if (gamma == 1.0 || color.a <= 0.0) {
+        return color;
+    }
+    // The frame is premultiplied, the curve goes on the colour itself
+    let rgb = pow(saturate(color.rgb / color.a), vec3<f32>(1.0 / gamma));
+    return vec4<f32>(rgb * color.a, color.a);
 }

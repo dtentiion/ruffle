@@ -76,6 +76,8 @@ pub struct WgpuRenderBackend<T: RenderTarget> {
     pub(crate) offscreen_buffer_pool: Arc<BufferPool<wgpu::Buffer, BufferDimensions>>,
     dynamic_transforms: DynamicTransforms,
     active_frame: ActiveFrame,
+    /// Gamma put on each finished frame as it's copied to the target
+    gamma: f32,
 }
 
 impl WgpuRenderBackend<SwapChainTarget> {
@@ -248,7 +250,13 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
             offscreen_buffer_pool: Arc::new(offscreen_buffer_pool),
             dynamic_transforms: transforms,
             active_frame,
+            gamma: 1.0,
         })
+    }
+
+    /// Gamma for the frames after this one, pow(rgb, 1 / gamma) over all of it
+    pub fn set_gamma(&mut self, gamma: f32) {
+        self.gamma = if gamma > 0.0 { gamma } else { 1.0 };
     }
 
     fn register_shape_internal(
@@ -589,6 +597,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
                     target.whole_frame_bind_group(&self.descriptors),
                     target.globals(),
                     target.color_texture().sample_count(),
+                    1.0,
                     &mut self.active_frame.command_encoder,
                 );
             }
@@ -614,6 +623,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
             commands,
             LayerRef::None,
             &mut self.texture_pool,
+            self.gamma,
         );
         self.active_frame.staging_belt.finish();
 
@@ -770,6 +780,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
             commands,
             LayerRef::Current,
             &mut self.offscreen_texture_pool,
+            1.0,
         );
 
         self.active_frame.maybe_flush(&self.descriptors);

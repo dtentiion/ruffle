@@ -204,6 +204,7 @@ pub fn run_copy_pipeline(
     whole_frame_bind_group: &wgpu::BindGroup,
     globals: &Globals,
     sample_count: u32,
+    gamma: f32,
     encoder: &mut CommandEncoder,
 ) {
     let copy_bind_group = descriptors
@@ -230,7 +231,7 @@ pub fn run_copy_pipeline(
         });
 
     let pipeline = if actual_surface_format == format {
-        descriptors.copy_pipeline(format, sample_count)
+        descriptors.copy_pipeline(format, sample_count, gamma)
     } else {
         descriptors.copy_srgb_pipeline(actual_surface_format, sample_count)
     };
