@@ -24,14 +24,7 @@ fn main_fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     // src is the pixel that we want to apply
     var src: vec4<f32> = textureSample(current_texture, texture_sampler, in.uv);
 
-    if (src.a > 0.0) {
-        return vec4<f32>(dst.rgb * src.a, src.a * dst.a);
-    } else {
-        if (true) {
-            // This needs to be in a branch because... reasons. Bug in naga.
-            // https://github.com/gfx-rs/naga/issues/2168
-            discard;
-        }
-        return dst;
-    }
+    // Transparent pixels hide the layer too, like Iggy. The credits fade
+    // their lines out under a gradient that ends fully transparent.
+    return vec4<f32>(dst.rgb * src.a, src.a * dst.a);
 }
