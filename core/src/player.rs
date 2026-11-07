@@ -3352,6 +3352,23 @@ impl Player {
         })
     }
 
+    /// Scale and move the root clip itself, in stage pixels. The host
+    /// grows a scene whose whole stage is its background over a screen
+    /// wider than the movie with it.
+    pub fn set_root_transform(&mut self, scale_x: f32, scale_y: f32, tx: f64, ty: f64) -> bool {
+        use crate::display_object::TDisplayObject;
+        use ruffle_render::matrix::Matrix as RenderMatrix;
+        self.mutate_with_update_context(|context| {
+            let Some(root) = context.stage.root_clip() else { return false; };
+            let mut m = RenderMatrix::scale(scale_x, scale_y);
+            m.tx = Twips::from_pixels(tx);
+            m.ty = Twips::from_pixels(ty);
+            root.set_matrix(m);
+            root.set_transformed_by_script(true);
+            true
+        })
+    }
+
     /// Draw the root clip's child at a depth on past its left and right
     /// edges, in stage pixels: a strip the movie runs to the edges of its
     /// 16:9 stage reaches the edges of a wider screen.
