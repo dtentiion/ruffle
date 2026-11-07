@@ -447,35 +447,15 @@ impl<'gc> UpdateContext<'gc> {
         self.sockets.close_all();
         self.timers.remove_all();
 
-        // Drop AS3 event listeners the outgoing SWF registered on
+        // Drop the AS3 event listeners the outgoing SWF registered on
         // the stage. Flash Player would clean these up when the SWF
-        // unloads (because the listener closures hold references to
-        // the old SWF's classes, which then become unreachable), but
-        // Ruffle's GC keeps the DispatchList alive since Stage itself
-        // persists. Without this, a host doing programmatic scene
-        // transitions (e.g. LCE iOS swapping Settings sub-scenes)
-        // accumulates a fresh set of listeners on every replace, and
-        // old FJ_Document / document-class keyDown handlers keep
-        // firing in parallel with the new scene's. Concretely: after
-        // one Settings Audio re-entry two keyDown handlers run per
-        // dpad-down and drive focus twice, producing a bounce.
-        {
-            use crate::avm2::globals::slots::flash_events_event_dispatcher as ed_slots;
-            use crate::avm2::{Object as Avm2Object, TObject as _};
-            use crate::display_object::TDisplayObject;
-            let stage_do: DisplayObject<'_> = self.stage.into();
-            if let Some(stage_avm2) = stage_do.object2() {
-                let stage_obj: Avm2Object<'_> = stage_avm2.into();
-                if let crate::avm2::Value::Object(dispatch_list) =
-                    stage_obj.get_slot(ed_slots::DISPATCH_LIST)
-                    && let Some(mut dispatch) = dispatch_list.as_dispatch_mut(self.gc())
-                {
-                    dispatch.clear_all();
-                }
-            }
-        }
-
+        // unloads, but the Stage persists here, and the old scene's
+        // FJ_Document keyDown handler would keep firing next to the new
+        // one's. The sibling movies' listeners (the tooltips strip's
+        // keyDown) stay, like the other Iggy movies when one goes.
         let outgoing = self.root_swf.clone();
+        self.drop_stage_listeners_of(&outgoing);
+
         let outgoing_root = self.stage.root_clip();
         self.set_root_movie(movie);
         if let Some(outgoing_root) = outgoing_root {
@@ -488,6 +468,34 @@ impl<'gc> UpdateContext<'gc> {
         // imported, and with anything a later root's swap finds made again
         // by what's left running from it.
         self.library.retire_movie(&outgoing);
+    }
+
+    /// Drop the stage's AS3 event listeners whose code is the movie's, or
+    /// that of the libraries it imported into its domain.
+    pub(crate) fn drop_stage_listeners_of(&mut self, movie: &Arc<SwfMovie>) {
+        use crate::avm2::globals::slots::flash_events_event_dispatcher as ed_slots;
+        use crate::avm2::{Object as Avm2Object, TObject as _};
+        use crate::display_object::TDisplayObject;
+        let Some(domain) = self
+            .library
+            .library_for_movie(movie.clone())
+            .and_then(|lib| lib.try_avm2_domain())
+        else {
+            return;
+        };
+        let stage_do: DisplayObject<'_> = self.stage.into();
+        let Some(stage_avm2) = stage_do.object2() else {
+            return;
+        };
+        let stage_obj: Avm2Object<'_> = stage_avm2.into();
+        if let crate::avm2::Value::Object(dispatch_list) =
+            stage_obj.get_slot(ed_slots::DISPATCH_LIST)
+            && let Some(mut dispatch) = dispatch_list.as_dispatch_mut(self.gc())
+        {
+            dispatch.retain_handlers(|handler| {
+                handler.executable().as_method().translation_unit().domain() != domain
+            });
+        }
     }
 
     /// The pointer, focus and drag can still be on objects of a root movie

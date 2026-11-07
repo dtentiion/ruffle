@@ -2772,36 +2772,23 @@ impl Player {
         })
     }
 
-    /// Wipe every AVM2 event listener attached to the Stage
-    /// object. Used by the dialog overlay path: the underlying
+    /// Drop the AVM2 event listeners the root movie attached to the
+    /// Stage. Used by the dialog overlay path: the underlying
     /// scene's FJ_Document and the dialog's FJ_Document both
     /// register stage-level KEY_DOWN listeners, and their bail-
     /// check is by name (m_this.getChildByName(focused.name)),
     /// so name collisions between MessageBox's Button0..3 and
     /// MainMenu / Settings's Button0..6 cause both handlers to
-    /// navigate independently. Clearing the DispatchList lets the
-    /// host control which listener gets re-attached: pair this
-    /// with redispatch_added_to_stage_on_root_or_sibling to bring
-    /// back exactly one document's listeners.
+    /// navigate independently. Pair this with
+    /// redispatch_added_to_stage to bring back one document's
+    /// listeners. The other sibling movies keep theirs, the tooltips
+    /// strip still takes the dialog's key presses.
     pub fn clear_stage_dispatch_list(&mut self) -> bool {
-        use crate::avm2::globals::slots::flash_events_event_dispatcher as ed_slots;
-        use crate::avm2::{Object as Avm2Object, TObject as _};
-        use crate::display_object::TDisplayObject;
-        let cleared = std::cell::Cell::new(false);
         self.mutate_with_update_context(|context| {
-            let stage_do: DisplayObject<'_> = context.stage.into();
-            if let Some(stage_avm2) = stage_do.object2() {
-                let stage_obj: Avm2Object<'_> = stage_avm2.into();
-                if let crate::avm2::Value::Object(dispatch_list) =
-                    stage_obj.get_slot(ed_slots::DISPATCH_LIST)
-                    && let Some(mut dispatch) = dispatch_list.as_dispatch_mut(context.gc())
-                {
-                    dispatch.clear_all();
-                    cleared.set(true);
-                }
-            }
+            let root = context.root_swf.clone();
+            context.drop_stage_listeners_of(&root);
         });
-        cleared.get()
+        true
     }
 
     /// Re-fire the AVM2 `addedToStage` event on a target. LCE's
@@ -2879,8 +2866,9 @@ impl Player {
                 let mut stage = context.stage;
                 stage.remove_child(context, child);
                 // A removed sibling (a message box) isn't coming back, so
-                // its library and the movies it imported are dropped the
-                // way a replaced root's are
+                // its stage listeners, its library and the movies it
+                // imported are dropped the way a replaced root's are
+                context.drop_stage_listeners_of(&child.movie());
                 context.forget_objects_under(child);
                 context.library.retire_movie(&child.movie());
                 found.set(true);
