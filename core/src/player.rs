@@ -4092,17 +4092,14 @@ impl Player {
         use crate::avm2::{
             Activation as Avm2Activation, FunctionArgs, Multiname, Value as Avm2Value,
         };
-        use crate::display_object::{TDisplayObject, TDisplayObjectContainer};
-        use crate::string::{AvmString, WString};
+        use crate::display_object::TDisplayObject;
+        use crate::string::AvmString;
         self.mutate_with_update_context(|context| {
             let Some(mut node) = context.stage.root_clip() else {
                 return (String::from("err: no root_clip"), None);
             };
             for seg in path.split('.').filter(|s| !s.is_empty()) {
-                let Some(container) = node.as_container() else {
-                    return (format!("err: parent of '{seg}' is not a container"), None);
-                };
-                let Some(child) = container.child_by_name(&WString::from_utf8(seg), false) else {
+                let Some(child) = value_path_child(context, node, seg) else {
                     return (format!("err: no child '{seg}' in '{path}'"), None);
                 };
                 node = child;
@@ -4144,13 +4141,11 @@ impl Player {
     /// Show or hide the display object at a dotted path from the root
     /// clip. Same as UIControl::setVisible on console.
     pub fn set_child_path_visible(&mut self, path: &str, visible: bool) -> bool {
-        use crate::display_object::{TDisplayObject, TDisplayObjectContainer};
-        use crate::string::WString;
+        use crate::display_object::TDisplayObject;
         self.mutate_with_update_context(|context| {
             let Some(mut node) = context.stage.root_clip() else { return false; };
             for seg in path.split('.').filter(|s| !s.is_empty()) {
-                let Some(container) = node.as_container() else { return false; };
-                let Some(child) = container.child_by_name(&WString::from_utf8(seg), false) else {
+                let Some(child) = value_path_child(context, node, seg) else {
                     return false;
                 };
                 node = child;
@@ -4163,13 +4158,11 @@ impl Player {
     /// The x, y, width and height Iggy's UIControl reads off a value path,
     /// x and y in the parent's coordinates.
     pub fn child_path_rect(&mut self, path: &str) -> Option<[f64; 4]> {
-        use crate::display_object::{TDisplayObject, TDisplayObjectContainer};
-        use crate::string::WString;
+        use crate::display_object::TDisplayObject;
         self.mutate_with_update_context(|context| {
             let mut node = context.stage.root_clip()?;
             for seg in path.split('.').filter(|s| !s.is_empty()) {
-                let container = node.as_container()?;
-                node = container.child_by_name(&WString::from_utf8(seg), false)?;
+                node = value_path_child(context, node, seg)?;
             }
             Some([node.x().to_pixels(), node.y().to_pixels(), node.width(), node.height()])
         })
@@ -4297,7 +4290,7 @@ impl Player {
             Activation as Avm2Activation, FunctionArgs, Multiname, Value as Avm2Value,
         };
         use crate::display_object::{DisplayObject, TDisplayObject, TDisplayObjectContainer};
-        use crate::string::{AvmString, WString};
+        use crate::string::AvmString;
         self.mutate_with_update_context(|context| {
             let stage_container: DisplayObject<'_> = context.stage.into();
             let movie = if depth == 0 {
@@ -4311,10 +4304,7 @@ impl Player {
                 return format!("err: no movie at depth {depth}");
             };
             for seg in path.split('.').filter(|s| !s.is_empty()) {
-                let Some(container) = node.as_container() else {
-                    return format!("err: parent of '{seg}' is not a container");
-                };
-                let Some(child) = container.child_by_name(&WString::from_utf8(seg), false) else {
+                let Some(child) = value_path_child(context, node, seg) else {
                     return format!("err: no child '{seg}' in '{path}'");
                 };
                 node = child;
@@ -4350,7 +4340,6 @@ impl Player {
     /// `set_child_path_visible` on the movie at a stage depth
     pub fn set_sibling_path_visible(&mut self, depth: i32, path: &str, visible: bool) -> bool {
         use crate::display_object::{DisplayObject, TDisplayObject, TDisplayObjectContainer};
-        use crate::string::WString;
         self.mutate_with_update_context(|context| {
             let stage_container: DisplayObject<'_> = context.stage.into();
             let movie = if depth == 0 {
@@ -4362,8 +4351,7 @@ impl Player {
             };
             let Some(mut node) = movie else { return false; };
             for seg in path.split('.').filter(|s| !s.is_empty()) {
-                let Some(container) = node.as_container() else { return false; };
-                let Some(child) = container.child_by_name(&WString::from_utf8(seg), false) else {
+                let Some(child) = value_path_child(context, node, seg) else {
                     return false;
                 };
                 node = child;
@@ -5033,6 +5021,32 @@ pub struct DragObject<'gc> {
     /// The bounding rectangle where the clip will be maintained.
     #[collect(require_static)]
     pub constraint: Rectangle<Twips>,
+}
+
+/// One name of an Iggy value path: the child of that name, or else the
+/// display object the AS3 property of that name holds. Iggy finds a name on
+/// the object, so a control its movie's script moved somewhere else (the
+/// LeaderboardMenu document puts its Info label on the stage) is still found.
+fn value_path_child<'gc>(
+    context: &mut UpdateContext<'gc>,
+    node: DisplayObject<'gc>,
+    name: &str,
+) -> Option<DisplayObject<'gc>> {
+    use crate::avm2::Value as Avm2Value;
+    use crate::string::{AvmString, WString};
+    if let Some(child) = node
+        .as_container()
+        .and_then(|c| c.child_by_name(&WString::from_utf8(name), false))
+    {
+        return Some(child);
+    }
+    let obj = node.object2()?;
+    let mut activation = Avm2Activation::from_nothing(context);
+    let name = AvmString::new_utf8(activation.gc(), name);
+    let value = Avm2Value::from(obj)
+        .get_public_property(name, &mut activation)
+        .ok()?;
+    value.as_object()?.as_display_object()
 }
 
 fn run_mouse_pick<'gc>(
