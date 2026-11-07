@@ -4013,6 +4013,18 @@ impl Player {
         method_name: &str,
         args: &[HostCallArg],
     ) -> String {
+        self.call_method_on_child_path_string(path, method_name, args).0
+    }
+
+    /// call_method_on_child_path, with the string the method returned, the
+    /// result IggyPlayerCallMethodRS fills in for UIControl_Base::getLabel.
+    /// None when the call failed or it returned anything else.
+    pub fn call_method_on_child_path_string(
+        &mut self,
+        path: &str,
+        method_name: &str,
+        args: &[HostCallArg],
+    ) -> (String, Option<String>) {
         use crate::avm2::{
             Activation as Avm2Activation, FunctionArgs, Multiname, Value as Avm2Value,
         };
@@ -4020,19 +4032,19 @@ impl Player {
         use crate::string::{AvmString, WString};
         self.mutate_with_update_context(|context| {
             let Some(mut node) = context.stage.root_clip() else {
-                return String::from("err: no root_clip");
+                return (String::from("err: no root_clip"), None);
             };
             for seg in path.split('.').filter(|s| !s.is_empty()) {
                 let Some(container) = node.as_container() else {
-                    return format!("err: parent of '{seg}' is not a container");
+                    return (format!("err: parent of '{seg}' is not a container"), None);
                 };
                 let Some(child) = container.child_by_name(&WString::from_utf8(seg), false) else {
-                    return format!("err: no child '{seg}' in '{path}'");
+                    return (format!("err: no child '{seg}' in '{path}'"), None);
                 };
                 node = child;
             }
             let Some(obj) = node.object2() else {
-                return String::from("err: target has no avm2 object");
+                return (String::from("err: target has no avm2 object"), None);
             };
             let mut activation = Avm2Activation::from_nothing(context);
             let ns = activation.avm2().find_public_namespace();
@@ -4053,8 +4065,14 @@ impl Player {
                 FunctionArgs::from_slice(&avm_args),
                 &mut activation,
             ) {
-                Ok(ret) => format!("ok: {ret:?}"),
-                Err(e) => format!("err: call failed: {e:?}"),
+                Ok(ret) => {
+                    let text = match ret {
+                        Avm2Value::String(s) => Some(s.to_utf8_lossy().into_owned()),
+                        _ => None,
+                    };
+                    (format!("ok: {ret:?}"), text)
+                }
+                Err(e) => (format!("err: call failed: {e:?}"), None),
             }
         })
     }
