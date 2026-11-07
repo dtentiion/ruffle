@@ -316,6 +316,10 @@ pub struct DisplayObjectBase<'gc> {
 
     /// Rectangle used for 9-slice scaling (`DisplayObject.scale9grid`).
     scaling_grid: Cell<Rectangle<Twips>>,
+
+    /// How far past its left and right edges the host has this object
+    /// drawn on, in its parent's units (see `render_edge_extension`).
+    edge_extend: Cell<(Twips, Twips)>,
 }
 
 #[derive(Clone)]
@@ -360,6 +364,7 @@ impl Default for DisplayObjectBase<'_> {
             scroll_rect: Cell::new(None),
             next_scroll_rect: Default::default(),
             scaling_grid: Default::default(),
+            edge_extend: Cell::new((Twips::ZERO, Twips::ZERO)),
         }
     }
 }
@@ -1139,6 +1144,7 @@ pub fn render_base<'gc>(
                 } else {
                     this.render_self(context);
                 }
+                render_edge_extension(this, context);
             },
             &options,
         );
@@ -1284,6 +1290,67 @@ pub fn apply_standard_mask_and_scroll<'gc, F>(
         // Remove the translation that we pushed
         context.transform_stack.pop();
     }
+}
+
+/// A 16:9 movie on a wider screen: a strip the movie runs to the edges of
+/// its stage is drawn on to the edges of the screen. Its first and last
+/// columns are drawn out over the extra width on either side, so the strip
+/// itself isn't stretched.
+fn render_edge_extension<'gc>(this: DisplayObject<'gc>, context: &mut RenderContext<'_, 'gc>) {
+    let (left, right) = this.edge_extend();
+    if left <= Twips::ZERO && right <= Twips::ZERO {
+        return;
+    }
+
+    let bounds = this.bounds_with_transform(&Default::default(), BoundsMode::Engine);
+    if bounds.x_max <= bounds.x_min || bounds.y_max <= bounds.y_min {
+        return;
+    }
+
+    // The extension is in the parent's units, one column is a parent pixel
+    let local_matrix = this.base().transform(true).matrix;
+    let scale_x = f64::from(f32::sqrt(local_matrix.a * local_matrix.a + local_matrix.b * local_matrix.b));
+    if scale_x <= 0.0 {
+        return;
+    }
+    let column = 1.0 / scale_x;
+    let world_matrix = context.transform_stack.transform().matrix;
+    let y_min = bounds.y_min;
+    let height = bounds.height().to_pixels() as f32;
+
+    let mut draw_side = |source_x: f64, to_x: f64, width: f64| {
+        if width <= 0.0 {
+            return;
+        }
+        let mask_rect = world_matrix
+            * Matrix::translate(Twips::from_pixels(to_x), y_min)
+            * Matrix::scale(width as f32, height);
+        let matrix = Matrix::translate(Twips::from_pixels(to_x), Twips::ZERO)
+            * Matrix::scale((width / column) as f32, 1.0)
+            * Matrix::translate(Twips::from_pixels(-source_x), Twips::ZERO);
+
+        context.commands.push_mask();
+        context.commands.draw_rect(Color::WHITE, mask_rect);
+        context.commands.activate_mask();
+
+        context.transform_stack.push(&Transform {
+            matrix,
+            ..Default::default()
+        });
+        this.render_self(context);
+        context.transform_stack.pop();
+
+        context.commands.deactivate_mask();
+        context.commands.draw_rect(Color::WHITE, mask_rect);
+        context.commands.pop_mask();
+    };
+
+    let x_min = bounds.x_min.to_pixels();
+    let x_max = bounds.x_max.to_pixels();
+    let left = left.to_pixels() / scale_x;
+    let right = right.to_pixels() / scale_x;
+    draw_side(x_min, x_min - left, left);
+    draw_side(x_max - column, x_max, right);
 }
 
 pub fn render_with_scaling_grid<'gc>(
@@ -2220,6 +2287,16 @@ pub trait TDisplayObject<'gc>:
     #[no_dynamic]
     fn set_scaling_grid(self, rect: Rectangle<Twips>) {
         self.base().scaling_grid.set(rect);
+    }
+
+    #[no_dynamic]
+    fn edge_extend(self) -> (Twips, Twips) {
+        self.base().edge_extend.get()
+    }
+
+    #[no_dynamic]
+    fn set_edge_extend(self, left: Twips, right: Twips) {
+        self.base().edge_extend.set((left, right));
     }
 
     #[no_dynamic]

@@ -3352,6 +3352,20 @@ impl Player {
         })
     }
 
+    /// Draw the root clip's child at a depth on past its left and right
+    /// edges, in stage pixels: a strip the movie runs to the edges of its
+    /// 16:9 stage reaches the edges of a wider screen.
+    pub fn set_root_child_edge_extend_at_depth(&mut self, depth: i32, left: f64, right: f64) -> bool {
+        use crate::display_object::{TDisplayObject, TDisplayObjectContainer};
+        self.mutate_with_update_context(|context| {
+            let Some(root) = context.stage.root_clip() else { return false; };
+            let Some(container) = root.as_container() else { return false; };
+            let Some(child) = container.child_by_depth(depth) else { return false; };
+            child.set_edge_extend(Twips::from_pixels(left), Twips::from_pixels(right));
+            true
+        })
+    }
+
     /// Stash the current matrix of every XUI-origin Bitmap into its
     /// xui_saved_matrix slot. Paired with restore_xui_matrices, used
     /// to freeze the panorama/logo/tooltips visual position across
