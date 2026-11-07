@@ -2791,6 +2791,78 @@ impl Player {
         true
     }
 
+    /// UILayer's components can't take input: the sibling movie at `depth`
+    /// stops hearing what the stage gets (pad keys, other movies' events)
+    /// and only hears what's sent into it with `send_key_to_sibling`.
+    pub fn set_sibling_takes_input(&mut self, depth: i32, takes_input: bool) -> bool {
+        use crate::display_object::{TDisplayObject, TDisplayObjectContainer};
+        self.mutate_with_update_context(|context| {
+            let stage_do: DisplayObject<'_> = context.stage.into();
+            let Some(sibling) = stage_do
+                .as_container()
+                .and_then(|c| c.iter_render_list().find(|child| child.depth() == depth))
+            else {
+                return false;
+            };
+            let Some(domain) = context
+                .library
+                .library_for_movie(sibling.movie())
+                .and_then(|lib| lib.try_avm2_domain())
+            else {
+                return false;
+            };
+            let components = &mut context.avm2.components;
+            components.retain(|(root, _)| !DisplayObject::ptr_eq(*root, sibling));
+            if !takes_input {
+                components.push((sibling, domain));
+            }
+            true
+        })
+    }
+
+    /// UIScene::sendInputToMovie on a component, as
+    /// UIController::AnimateKeyPress hands a press to the tooltips: a key
+    /// down or up by its Flash key code, sent into the sibling movie at
+    /// `depth` alone.
+    pub fn send_key_to_sibling(&mut self, depth: i32, key_code: u32, down: bool) -> bool {
+        use crate::display_object::{TDisplayObject, TDisplayObjectContainer};
+        self.mutate_with_update_context(|context| {
+            let stage_do: DisplayObject<'_> = context.stage.into();
+            let Some(target) = stage_do
+                .as_container()
+                .and_then(|c| c.iter_render_list().find(|child| child.depth() == depth))
+                .and_then(|sibling| sibling.object2())
+            else {
+                return false;
+            };
+            let mut activation = Avm2Activation::from_nothing(context);
+            let event_name = if down {
+                istr!("keyDown")
+            } else {
+                istr!("keyUp")
+            };
+            let keyboardevent_class = activation.avm2().classes().keyboardevent;
+            let keyboard_event = Avm2EventObject::from_class_and_args(
+                &mut activation,
+                keyboardevent_class,
+                &[
+                    event_name.into(), /* type */
+                    true.into(),       /* bubbles */
+                    false.into(),      /* cancelable */
+                    0.into(),          /* charCode */
+                    key_code.into(),   /* keyCode */
+                    0.into(),          /* keyLocation */
+                    false.into(),      /* ctrlKey */
+                    false.into(),      /* altKey */
+                    false.into(),      /* shiftKey */
+                    false.into(),      /* controlKey */
+                ],
+            );
+            Avm2::dispatch_event(activation.context, keyboard_event, target.into());
+            true
+        })
+    }
+
     /// Re-fire the AVM2 `addedToStage` event on a target. LCE's
     /// FJ_Document registers its stage-level KEY_DOWN listener
     /// inside its own `init` handler, which is wired to ADDED_TO_
@@ -2869,6 +2941,10 @@ impl Player {
                 // its stage listeners, its library and the movies it
                 // imported are dropped the way a replaced root's are
                 context.drop_stage_listeners_of(&child.movie());
+                context
+                    .avm2
+                    .components
+                    .retain(|(root, _)| !DisplayObject::ptr_eq(*root, child));
                 context.forget_objects_under(child);
                 context.library.retire_movie(&child.movie());
                 found.set(true);
