@@ -221,6 +221,10 @@ pub struct MovieClipData<'gc> {
 
     /// Show a hand cursor when the clip is in button mode.
     avm2_use_hand_cursor: Cell<bool>,
+
+    /// Timeline children AS3 took off this clip, by depth and character id
+    #[collect(require_static)]
+    script_removed: RefCell<Vec<(Depth, CharacterId)>>,
 }
 
 #[derive(Clone, Collect)]
@@ -263,6 +267,7 @@ impl<'gc> MovieClipData<'gc> {
             hit_area: Lock::new(None),
             attached_audio: Lock::new(None),
             next_avm1_clip: Lock::new(None),
+            script_removed: RefCell::new(Vec::new()),
         }
     }
 
@@ -1683,6 +1688,7 @@ impl<'gc> MovieClip<'gc> {
             context.avm_warning(&format!("Failed to place object at depth {depth}."));
             return None;
         }
+        self.forget_removed_by_script(depth);
         let library = context.library.library_for_movie_mut(src_movie.clone());
         match library.instantiate_by_id(id, context.gc_context) {
             Some(child) => {
@@ -1750,6 +1756,7 @@ impl<'gc> MovieClip<'gc> {
             context.avm_warning(&format!("Failed to place object at depth {depth}."));
             return None;
         }
+        self.forget_removed_by_script(depth);
 
         let movie = self.movie();
         let library = context.library.library_for_movie_mut(movie.clone());
@@ -2032,6 +2039,13 @@ impl<'gc> MovieClip<'gc> {
                                 params: &GotoPlaceObject<'_>| {
             use swf::PlaceObjectAction;
             let child_entry = clip.child_by_depth(params.depth());
+            // A timeline child AS3 removed stays removed, like Iggy
+            if child_entry.is_none()
+                && let PlaceObjectAction::Place(id) = params.place_object.action
+                && clip.removed_by_script(params.depth(), id)
+            {
+                return;
+            }
             if self.movie().is_action_script_3() && is_implicit && child_entry.is_none() {
                 // Looping gotos do not run their PlaceObject commands at goto
                 // time. They are instead held to frameConstructed like normal
@@ -2489,6 +2503,7 @@ impl<'gc> MovieClip<'gc> {
             goto_commands.swap_remove(i);
         }
         if !is_rewind {
+            self.forget_removed_by_script(depth);
             // For fast-forwards, if this tag were to remove an object
             // that existed before the goto, then we can remove that child right away.
             // Don't do this for rewinds, because they conceptually
@@ -2529,6 +2544,27 @@ impl<'gc> MovieClip<'gc> {
 
     pub fn set_avm2_enabled(self, enabled: bool) {
         self.0.avm2_enabled.set(enabled);
+    }
+
+    /// AS3 took a timeline child off this clip. Iggy doesn't place it again
+    /// when a goto goes back over the frame that placed it (4J's slots take
+    /// their SlotControl placeholder off and go back to SlotNormal).
+    pub fn timeline_child_removed_by_script(self, child: DisplayObject<'gc>) {
+        let mut removed = self.0.script_removed.borrow_mut();
+        removed.retain(|(depth, _)| *depth != child.depth());
+        removed.push((child.depth(), child.id()));
+    }
+
+    fn removed_by_script(self, depth: Depth, id: CharacterId) -> bool {
+        self.0.script_removed.borrow().contains(&(depth, id))
+    }
+
+    /// The timeline itself placed or removed something at the depth
+    fn forget_removed_by_script(self, depth: Depth) {
+        let mut removed = self.0.script_removed.borrow_mut();
+        if !removed.is_empty() {
+            removed.retain(|(d, _)| *d != depth);
+        }
     }
 
     fn use_hand_cursor(self, context: &mut UpdateContext<'gc>) -> bool {
@@ -5232,6 +5268,7 @@ impl<'gc, 'a> MovieClip<'gc> {
             reader.read_remove_object_2()
         }?;
 
+        self.forget_removed_by_script(remove_object.depth.into());
         if let Some(child) = self.child_by_depth(remove_object.depth.into()) {
             if !child.placed_by_avm2_script() {
                 self.remove_child(context, child);

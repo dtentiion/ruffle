@@ -87,10 +87,20 @@ fn validate_remove_operation<'gc>(
     Err(make_error_2025(activation))
 }
 
+/// A timeline child AS3 takes off its clip, which Iggy's gotos don't put back
+fn note_timeline_child_removed<'gc>(parent: DisplayObject<'gc>, child: DisplayObject<'gc>) {
+    if !child.placed_by_avm2_script() {
+        if let Some(clip) = parent.as_movie_clip() {
+            clip.timeline_child_removed_by_script(child);
+        }
+    }
+}
+
 /// Remove an element from it's parent display list.
 fn remove_child_from_displaylist<'gc>(context: &mut UpdateContext<'gc>, child: DisplayObject<'gc>) {
     if let Some(parent) = child.parent() {
         if let Some(mut ctr) = parent.as_container() {
+            note_timeline_child_removed(parent, child);
             child.set_placed_by_avm2_script(true);
             ctr.remove_child(context, child);
         }
@@ -316,6 +326,7 @@ pub fn remove_child_at<'gc>(
             }
 
             let child = ctr.child_by_index(target_child as usize).unwrap();
+            note_timeline_child_removed(parent, child);
             child.set_placed_by_avm2_script(true);
 
             ctr.remove_child(activation.context, child);
