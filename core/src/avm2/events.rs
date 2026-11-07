@@ -254,15 +254,19 @@ impl<'gc> DispatchList<'gc> {
         }
     }
 
-    /// Drop every registered handler for every event type.
+    /// Drop every handler `keep` turns down, for every event type.
     ///
-    /// Used by `replace_root_movie` to wipe AS3 listeners the outgoing
+    /// Used by `replace_root_movie` to drop the AS3 listeners the outgoing
     /// SWF attached to the stage. Without this, closures from the old
     /// SWF's classes stay alive (e.g. LCE's FJ_Document stage-level
     /// KEY_DOWN listener) and fire in parallel with the new SWF's
     /// listeners on every key press, causing double focus moves.
-    pub fn clear_all(&mut self) {
-        self.0.clear();
+    pub fn retain_handlers(&mut self, mut keep: impl FnMut(FunctionObject<'gc>) -> bool) {
+        for event_sheaf in self.0.values_mut() {
+            for set in event_sheaf.values_mut() {
+                set.retain(|h| keep(h.handler));
+            }
+        }
     }
 
     /// Determine if there are any event listeners in this dispatch list.
