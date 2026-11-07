@@ -457,6 +457,7 @@ impl<'gc> UpdateContext<'gc> {
         self.drop_stage_listeners_of(&outgoing);
 
         let outgoing_root = self.stage.root_clip();
+        self.remove_stage_children_added_by_script(outgoing_root);
         self.set_root_movie(movie);
         if let Some(outgoing_root) = outgoing_root {
             self.forget_objects_under(outgoing_root);
@@ -468,6 +469,31 @@ impl<'gc> UpdateContext<'gc> {
         // imported, and with anything a later root's swap finds made again
         // by what's left running from it.
         self.library.retire_movie(&outgoing);
+    }
+
+    /// What the outgoing root's script put on the stage itself goes with it,
+    /// like Iggy freeing the movie (LeaderboardMenu moves its Info label
+    /// there). The sibling movies the host placed are in the stage's depth
+    /// list, a script's addChild never is.
+    fn remove_stage_children_added_by_script(&mut self, root: Option<DisplayObject<'gc>>) {
+        let stage_do: DisplayObject<'gc> = self.stage.into();
+        let Some(stage) = stage_do.as_container() else {
+            return;
+        };
+        let added: Vec<DisplayObject<'gc>> = stage
+            .iter_render_list()
+            .filter(|child| {
+                !root.is_some_and(|r| DisplayObject::ptr_eq(r, *child))
+                    && !stage
+                        .child_by_depth(child.depth())
+                        .is_some_and(|placed| DisplayObject::ptr_eq(placed, *child))
+            })
+            .collect();
+        for child in added {
+            let mut stage = self.stage;
+            stage.remove_child(self, child);
+            self.forget_objects_under(child);
+        }
     }
 
     /// Drop the stage's AS3 event listeners whose code is the movie's, or
