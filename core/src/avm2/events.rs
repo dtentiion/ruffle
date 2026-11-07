@@ -5,7 +5,7 @@ use crate::avm2::activation::Activation;
 use crate::avm2::function::FunctionArgs;
 use crate::avm2::globals::slots::flash_events_event_dispatcher as slots;
 use crate::avm2::object::{EventObject, FunctionObject, Object, TObject as _};
-use crate::display_object::TDisplayObject;
+use crate::display_object::{DisplayObject, TDisplayObject};
 use crate::string::AvmString;
 use fnv::FnvHashMap;
 use gc_arena::Collect;
@@ -399,11 +399,43 @@ fn dispatch_event_to_target<'gc>(
     let name = evtmut.event_type();
     let use_capture = evtmut.phase() == EventPhase::Capturing;
 
-    let handlers: Vec<FunctionObject<'gc>> = dispatch_list
+    let mut handlers: Vec<FunctionObject<'gc>> = dispatch_list
         .as_dispatch_mut(activation.gc())
         .expect("Internal dispatch list is missing during dispatch!")
         .iter_event_handlers(name, use_capture)
         .collect();
+
+    // A component movie has a stage of its own, like every Iggy movie: its
+    // stage listeners hear only the events sent into it, and the others
+    // never hear those
+    let components = &activation.avm2().components;
+    if !components.is_empty()
+        && !handlers.is_empty()
+        && dispatcher
+            .as_display_object()
+            .is_some_and(|d| d.as_stage().is_some())
+    {
+        let mut top = real_target.as_display_object();
+        while let Some(parent) = top.and_then(|d| d.parent()) {
+            if parent.as_stage().is_some() {
+                break;
+            }
+            top = Some(parent);
+        }
+        let target_component = top.and_then(|top| {
+            components
+                .iter()
+                .find(|(root, _)| DisplayObject::ptr_eq(*root, top))
+                .map(|(_, domain)| *domain)
+        });
+        handlers.retain(|handler| {
+            let domain = handler.executable().as_method().translation_unit().domain();
+            match target_component {
+                Some(component) => domain == component,
+                None => !components.iter().any(|(_, d)| *d == domain),
+            }
+        });
+    }
 
     if !handlers.is_empty() {
         evtmut.set_target(real_target);

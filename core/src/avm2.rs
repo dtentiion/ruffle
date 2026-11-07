@@ -193,6 +193,11 @@ pub struct Avm2<'gc> {
     pub debug_output: bool,
 
     pub optimizer_enabled: bool,
+
+    /// The sibling movies that are UILayer components (the panorama,
+    /// logo, tooltips), each root with its domain. They can't take input:
+    /// their stage listeners only hear what's sent into them.
+    pub components: Vec<(DisplayObject<'gc>, Domain<'gc>)>,
 }
 
 impl<'gc> Avm2<'gc> {
@@ -243,6 +248,8 @@ impl<'gc> Avm2<'gc> {
             debug_output: false,
 
             optimizer_enabled: true,
+
+            components: Vec::new(),
         }
     }
 
