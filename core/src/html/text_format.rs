@@ -786,7 +786,8 @@ impl FormatSpans {
             match reader.read_event() {
                 Ok(Event::Start(ref e)) => {
                     let tag_name = &e.name().into_inner().to_ascii_lowercase()[..];
-                    let attributes: Result<Vec<_>, _> = e.attributes().with_checks(false).collect();
+                    // Flash and Iggy take unquoted values like align=center
+                    let attributes: Result<Vec<_>, _> = e.html_attributes().with_checks(false).collect();
                     let attributes = match attributes {
                         Ok(attributes) => attributes,
                         Err(e) => {
