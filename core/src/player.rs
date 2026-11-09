@@ -2119,6 +2119,120 @@ impl Player {
         self.needs_render = false;
     }
 
+    /// Iggy draws a scene's custom draw content at its place in the
+    /// display list, but the game draws it on a layer of its own over this
+    /// one. The object at `path` from the root clip, which the scene has over
+    /// that content (a container menu's cursor), is left out here and drawn
+    /// by itself into `overlay`, a layer over the game's. Without the object
+    /// `overlay` gets an empty frame.
+    pub fn render_split(&mut self, overlay: &mut dyn RenderBackend, path: &str) {
+        use crate::display_object::{TDisplayObject, TDisplayObjectContainer, set_render_split_skip};
+        use crate::string::WString;
+
+        let invalidated = self.enter_arena(|_, gc_root, _| gc_root.stage.invalidated());
+
+        if invalidated {
+            self.update(|context| {
+                let stage = context.stage;
+                stage.broadcast_render(context);
+            });
+        }
+
+        let mut background_color = Color::WHITE;
+        let mut overlay_cache_draws = vec![];
+
+        let (cache_draws, commands, overlay_commands) =
+            self.enter_arena_mut(|gc_context, gc_root, this| {
+                let stage = gc_root.stage;
+
+                let mut split = stage.root_clip();
+                for seg in path.split('.').filter(|s| !s.is_empty()) {
+                    split = split
+                        .and_then(|node| node.as_container())
+                        .and_then(|c| c.child_by_name(&WString::from_utf8(seg), false));
+                }
+
+                set_render_split_skip(split);
+                let mut cache_draws = vec![];
+                let mut render_context = RenderContext {
+                    renderer: this.renderer.deref_mut(),
+                    commands: CommandList::new(),
+                    cache_draws: &mut cache_draws,
+                    gc_context,
+                    library: &gc_root.library,
+                    transform_stack: &mut this.transform_stack,
+                    is_offscreen: false,
+                    use_bitmap_cache: true,
+                    stage,
+                };
+                stage.render_viewport(&mut render_context);
+                set_render_split_skip(None);
+                let commands = render_context.commands;
+
+                background_color =
+                    if stage.window_mode() != WindowMode::Transparent || stage.is_fullscreen() {
+                        stage.background_color().unwrap_or(Color::WHITE)
+                    } else {
+                        Color::from_rgba(0)
+                    };
+
+                let mut overlay_commands = CommandList::new();
+                if let Some(object) = split {
+                    // What it's in, innermost first, up to the stage
+                    let mut parents = vec![];
+                    let mut visible = object.visible();
+                    let mut node = object.parent();
+                    while let Some(parent) = node {
+                        if parent.as_stage().is_some() {
+                            break;
+                        }
+                        visible &= parent.visible();
+                        parents.push(parent);
+                        node = parent.parent();
+                    }
+                    if visible {
+                        let mut overlay_context = RenderContext {
+                            renderer: &mut *overlay,
+                            commands: CommandList::new(),
+                            cache_draws: &mut overlay_cache_draws,
+                            gc_context,
+                            library: &gc_root.library,
+                            transform_stack: &mut this.transform_stack,
+                            is_offscreen: false,
+                            use_bitmap_cache: true,
+                            stage,
+                        };
+                        // Stage::render_viewport's
+                        overlay_context.transform_stack.push(&ruffle_render::transform::Transform {
+                            matrix: stage.view_matrix(),
+                            color_transform: Default::default(),
+                            perspective_projection: stage
+                                .as_displayobject()
+                                .base()
+                                .perspective_projection(),
+                        });
+                        for parent in parents.iter().rev() {
+                            let transform = parent.base().transform(true);
+                            overlay_context.transform_stack.push(&transform);
+                        }
+                        object.render(&mut overlay_context);
+                        for _ in 0..parents.len() + 1 {
+                            overlay_context.transform_stack.pop();
+                        }
+                        overlay_commands = overlay_context.commands;
+                    }
+                }
+
+                (cache_draws, commands, overlay_commands)
+            });
+
+        self.renderer
+            .submit_frame(background_color, commands, cache_draws);
+        overlay.submit_frame(Color::from_rgba(0), overlay_commands, overlay_cache_draws);
+
+        self.needs_render = false;
+    }
+
     /// The current frame of the main timeline, if available.
     /// The first frame is frame 1.
     pub fn current_frame(&self) -> Option<u16> {

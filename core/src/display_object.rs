@@ -402,7 +402,7 @@ impl<'gc> DisplayObjectBase<'gc> {
         self.place_frame.set(frame);
     }
 
-    fn transform(&self, apply_matrix: bool) -> Transform {
+    pub(crate) fn transform(&self, apply_matrix: bool) -> Transform {
         Transform {
             matrix: if apply_matrix {
                 self.matrix.get()
@@ -936,6 +936,17 @@ struct DrawCacheInfo {
     filters: Vec<Filter>,
 }
 
+thread_local! {
+    /// The object Player::render_split leaves out of the main render
+    static RENDER_SPLIT_SKIP: Cell<*const DisplayObjectPtr> = const { Cell::new(std::ptr::null()) };
+}
+
+/// Leave this object (and what's in it) out of rendering until it's
+/// set back to None
+pub fn set_render_split_skip(object: Option<DisplayObject<'_>>) {
+    RENDER_SPLIT_SKIP.with(|s| s.set(object.map_or(std::ptr::null(), |o| o.as_ptr())));
+}
+
 pub fn render_base<'gc>(
     this: DisplayObject<'gc>,
     context: &mut RenderContext<'_, 'gc>,
@@ -952,6 +963,10 @@ pub fn render_base<'gc>(
         if name.starts_with(crate::string::WStr::from_units(b"iggy_")) {
             return;
         }
+    }
+
+    if std::ptr::eq(RENDER_SPLIT_SKIP.with(|s| s.get()), this.as_ptr()) {
+        return;
     }
 
     if options.apply_transform {
