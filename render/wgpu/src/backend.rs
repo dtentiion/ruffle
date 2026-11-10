@@ -190,6 +190,9 @@ pub struct WgpuRenderBackend<T: RenderTarget> {
     /// What the frame now on the target was drawn from. A frame that would
     /// come out the same isn't drawn again.
     last_frame: Option<(u64, u64)>,
+    /// How many in a row weren't. One is drawn every so often all the same,
+    /// in case the target lost its frame or something changed unseen.
+    frames_skipped: u32,
 }
 
 impl WgpuRenderBackend<SwapChainTarget> {
@@ -365,6 +368,7 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
             active_frame,
             gamma: 1.0,
             last_frame: None,
+            frames_skipped: 0,
         })
     }
 
@@ -636,10 +640,12 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
         } else {
             None
         };
-        if frame.is_some() && frame == self.last_frame {
+        if frame.is_some() && frame == self.last_frame && self.frames_skipped < 60 {
+            self.frames_skipped += 1;
             return;
         }
         self.last_frame = None;
+        self.frames_skipped = 0;
 
         let frame_output = match self.target.get_next_texture() {
             Ok(frame) => frame,
