@@ -4797,6 +4797,12 @@ impl<'gc, 'a> MovieClip<'gc> {
                     &place_object,
                 );
 
+                if place_object.has_image {
+                    if let Some(bitmap) = self.child_by_depth(depth).and_then(|c| c.as_bitmap()) {
+                        bitmap.set_placed_image(true);
+                    }
+                }
+
                 // Note: skin_Minecraft.xui's `<Scale>` element for
                 // Panorama_Background_S/N is already baked into the SWF
                 // PlaceObject matrix (a=5, d=5 at the authored tile

@@ -136,6 +136,10 @@ pub struct BitmapGraphicData<'gc> {
     /// over time to see if the Panorama scroll animation is running.
     xui_origin: Cell<bool>,
 
+    /// Placed as an image by its class name (PlaceObject3 with
+    /// HAS_IMAGE), the way the skin's own art gets onto a scene.
+    placed_image: Cell<bool>,
+
     /// Per-instance render counter for the xui_origin diagnostic.
     /// Process-global counters get biased toward whichever Bitmap
     /// renders first in the frame, so we keep one here instead.
@@ -198,6 +202,7 @@ impl<'gc> Bitmap<'gc> {
                 height: Cell::new(height),
                 xui_scale: Cell::new(None),
                 xui_origin: Cell::new(false),
+                placed_image: Cell::new(false),
                 xui_render_tick: Cell::new(0),
                 xui_tx_offset: Cell::new(None),
                 xui_saved_matrix: Cell::new(None),
@@ -270,6 +275,11 @@ impl<'gc> Bitmap<'gc> {
     /// diagnostics can find it later. Independent of `set_xui_scale`.
     pub fn set_xui_origin(self, is_xui: bool) {
         self.0.xui_origin.set(is_xui);
+    }
+
+    /// Mark this Bitmap as an image a movie placed by class name.
+    pub fn set_placed_image(self, placed: bool) {
+        self.0.placed_image.set(placed);
     }
 
     /// Set the authored-tx correction (see `xui_tx_offset` field
@@ -549,7 +559,16 @@ impl<'gc> TDisplayObject<'gc> for Bitmap<'gc> {
         // tiles) even though the AS3 Bitmap ctor leaves smoothing off for
         // timeline bitmaps. Bitmaps the SWF itself carries, like the HUD's
         // pixel art, keep the SWF's own smoothing.
-        let smoothing = self.0.smoothing.get() || self.0.xui_origin.get();
+        //
+        // The same tiles come out of the skin when the host has none of
+        // its own, placed as images at 5x, and they're filtered there
+        // too. An image placed at its own size is left as it is: on the
+        // screen it was drawn for that's the same picture either way.
+        let placed_scaled = self.0.placed_image.get() && {
+            let m = self.base().matrix();
+            (m.a - 1.0).abs() > 0.001 || (m.d - 1.0).abs() > 0.001 || m.b != 0.0 || m.c != 0.0
+        };
+        let smoothing = self.0.smoothing.get() || self.0.xui_origin.get() || placed_scaled;
         self.0.bitmap_data.get().render(
             smoothing,
             context,
