@@ -21,7 +21,7 @@ use ruffle_render::backend::{RenderBackend, ShapeHandle, ViewportDimensions};
 use ruffle_render::bitmap::{
     Bitmap, BitmapFormat, BitmapHandle, BitmapSource, PixelRegion, RgbaBufRead, SyncHandle,
 };
-use ruffle_render::commands::CommandList;
+use ruffle_render::commands::{Command, CommandList, RenderBlendMode};
 use ruffle_render::error::Error as BitmapError;
 use ruffle_render::filters::Filter;
 use ruffle_render::pixel_bender::{PixelBenderShader, PixelBenderShaderHandle};
@@ -29,14 +29,123 @@ use ruffle_render::pixel_bender_support::PixelBenderShaderArgument;
 use ruffle_render::quality::StageQuality;
 use ruffle_render::shape_utils::DistilledShape;
 use ruffle_render::tessellator::ShapeTessellator;
+use ruffle_render::transform::Transform;
 use std::any::Any;
 use std::borrow::Cow;
 use std::cell::Cell;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::num::NonZeroU32;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use swf::Color;
 use tracing::instrument;
 use wgpu::SubmissionIndex;
+
+/// Goes up whenever something a frame draws from changes with the frame's
+/// commands staying the same: a texture's pixels, or a new shape or bitmap
+/// that could sit at the address of a dropped one.
+static CONTENT_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+fn content_changed() {
+    CONTENT_GENERATION.fetch_add(1, Ordering::Relaxed);
+}
+
+fn hash_transform(transform: &Transform, hasher: &mut DefaultHasher) {
+    let matrix = &transform.matrix;
+    for v in [matrix.a, matrix.b, matrix.c, matrix.d] {
+        v.to_bits().hash(hasher);
+    }
+    matrix.tx.get().hash(hasher);
+    matrix.ty.get().hash(hasher);
+    let color = &transform.color_transform;
+    for v in [
+        color.r_multiply,
+        color.g_multiply,
+        color.b_multiply,
+        color.a_multiply,
+    ] {
+        v.get().hash(hasher);
+    }
+    [color.r_add, color.g_add, color.b_add, color.a_add].hash(hasher);
+    match &transform.perspective_projection {
+        Some(projection) => {
+            projection.field_of_view.to_bits().hash(hasher);
+            projection.center.0.to_bits().hash(hasher);
+            projection.center.1.to_bits().hash(hasher);
+        }
+        None => 0u8.hash(hasher),
+    }
+}
+
+fn hash_rect(
+    kind: u8,
+    color: &Color,
+    matrix: &ruffle_render::matrix::Matrix,
+    hasher: &mut DefaultHasher,
+) {
+    kind.hash(hasher);
+    [color.r, color.g, color.b, color.a].hash(hasher);
+    for v in [matrix.a, matrix.b, matrix.c, matrix.d] {
+        v.to_bits().hash(hasher);
+    }
+    matrix.tx.get().hash(hasher);
+    matrix.ty.get().hash(hasher);
+}
+
+/// False for commands whose output can change from one frame to the next
+/// by itself
+fn hash_commands(commands: &CommandList, hasher: &mut DefaultHasher) -> bool {
+    commands.commands.len().hash(hasher);
+    for command in &commands.commands {
+        match command {
+            Command::RenderBitmap {
+                bitmap,
+                transform,
+                smoothing,
+                pixel_snapping,
+            } => {
+                0u8.hash(hasher);
+                (Arc::as_ptr(&bitmap.0) as *const () as usize).hash(hasher);
+                hash_transform(transform, hasher);
+                smoothing.hash(hasher);
+                (*pixel_snapping as u8).hash(hasher);
+            }
+            Command::RenderStage3D { .. } => return false,
+            Command::RenderShape { shape, transform } => {
+                1u8.hash(hasher);
+                (Arc::as_ptr(&shape.0) as *const () as usize).hash(hasher);
+                hash_transform(transform, hasher);
+            }
+            Command::RenderAlphaMask {
+                maskee_commands,
+                mask_commands,
+            } => {
+                2u8.hash(hasher);
+                if !hash_commands(maskee_commands, hasher) || !hash_commands(mask_commands, hasher)
+                {
+                    return false;
+                }
+            }
+            Command::DrawRect { color, matrix } => hash_rect(3, color, matrix, hasher),
+            Command::DrawLine { color, matrix } => hash_rect(4, color, matrix, hasher),
+            Command::DrawLineRect { color, matrix } => hash_rect(5, color, matrix, hasher),
+            Command::PushMask => 6u8.hash(hasher),
+            Command::ActivateMask => 7u8.hash(hasher),
+            Command::DeactivateMask => 8u8.hash(hasher),
+            Command::PopMask => 9u8.hash(hasher),
+            Command::Blend(commands, RenderBlendMode::Builtin(mode)) => {
+                10u8.hash(hasher);
+                (*mode as u8).hash(hasher);
+                if !hash_commands(commands, hasher) {
+                    return false;
+                }
+            }
+            Command::Blend(_, RenderBlendMode::Shader(_)) => return false,
+        }
+    }
+    true
+}
 
 /// Creates a wgpu instance with Ruffle's required configuration.
 ///
@@ -78,6 +187,9 @@ pub struct WgpuRenderBackend<T: RenderTarget> {
     active_frame: ActiveFrame,
     /// Gamma put on each finished frame as it's copied to the target
     gamma: f32,
+    /// What the frame now on the target was drawn from. A frame that would
+    /// come out the same isn't drawn again.
+    last_frame: Option<(u64, u64)>,
 }
 
 impl WgpuRenderBackend<SwapChainTarget> {
@@ -156,6 +268,7 @@ impl WgpuRenderBackend<SwapChainTarget> {
         let surface = unsafe { descriptors.wgpu_instance.create_surface_unsafe(window)? };
         self.target =
             SwapChainTarget::new(surface, &descriptors.adapter, size, &descriptors.device);
+        self.last_frame = None;
         Ok(())
     }
 }
@@ -251,6 +364,7 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
             dynamic_transforms: transforms,
             active_frame,
             gamma: 1.0,
+            last_frame: None,
         })
     }
 
@@ -426,6 +540,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
 
         self.viewport_scale_factor = dimensions.scale_factor;
         self.texture_pool = TexturePool::new();
+        self.last_frame = None;
     }
 
     fn create_context3d(
@@ -484,6 +599,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
             self.surface.size().height,
             self.target.format(),
         );
+        self.last_frame = None;
     }
 
     fn viewport_dimensions(&self) -> ViewportDimensions {
@@ -501,6 +617,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
         bitmap_source: &dyn BitmapSource,
     ) -> ShapeHandle {
         let mesh = self.register_shape_internal(shape, bitmap_source);
+        content_changed();
         ShapeHandle(Arc::new(mesh))
     }
 
@@ -511,6 +628,19 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
         commands: CommandList,
         cache_entries: Vec<BitmapCacheEntry>,
     ) {
+        let mut hasher = DefaultHasher::new();
+        [clear.r, clear.g, clear.b, clear.a].hash(&mut hasher);
+        self.gamma.to_bits().hash(&mut hasher);
+        let frame = if cache_entries.is_empty() && hash_commands(&commands, &mut hasher) {
+            Some((hasher.finish(), CONTENT_GENERATION.load(Ordering::Relaxed)))
+        } else {
+            None
+        };
+        if frame.is_some() && frame == self.last_frame {
+            return;
+        }
+        self.last_frame = None;
+
         let frame_output = match self.target.get_next_texture() {
             Ok(frame) => frame,
             Err(e) => {
@@ -630,10 +760,12 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
         self.active_frame
             .submit_for_target(&self.descriptors, &self.target, frame_output);
         self.offscreen_texture_pool = TexturePool::new();
+        self.last_frame = frame;
     }
 
     #[instrument(level = "debug", skip_all)]
     fn register_bitmap(&mut self, bitmap: Bitmap<'_>) -> Result<BitmapHandle, BitmapError> {
+        content_changed();
         let mut bitmap = bitmap.to_rgba();
 
         self.clamp_bitmap(&mut bitmap);
@@ -695,6 +827,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
         bitmap: Bitmap<'_>,
         mut region: PixelRegion,
     ) -> Result<(), BitmapError> {
+        content_changed();
         let texture = as_texture(handle);
 
         let mut bitmap = bitmap.to_rgba();
@@ -743,6 +876,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
         quality: StageQuality,
         bounds: PixelRegion,
     ) -> Option<Box<dyn SyncHandle>> {
+        content_changed();
         let texture = as_texture(&handle);
 
         let extent = wgpu::Extent3d {
@@ -813,6 +947,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
         dest_point: (i32, i32),
         filter: Filter,
     ) -> Option<Box<dyn SyncHandle>> {
+        content_changed();
         let source_texture = as_texture(&source);
         let dest_texture = as_texture(&destination);
 
@@ -910,6 +1045,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
         arguments: &[PixelBenderShaderArgument],
         target: &PixelBenderTarget,
     ) -> Result<PixelBenderOutput, BitmapError> {
+        content_changed();
         let output_channels = shader
             .0
             .parsed_shader()
@@ -1072,6 +1208,7 @@ impl<T: RenderTarget + 'static> RenderBackend for WgpuRenderBackend<T> {
         width: NonZeroU32,
         height: NonZeroU32,
     ) -> Result<BitmapHandle, BitmapError> {
+        content_changed();
         let width = width.get();
         let height = height.get();
 
